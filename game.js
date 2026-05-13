@@ -1,5 +1,5 @@
-// Video Pool — HTML5 remake inspired by the ZX Spectrum game.
-// Top-down view, mouse-only controls, Web Audio sound effects.
+// American 8-Ball Pool — HTML5 Canvas game
+// Based on "Video Pool" engine, rewritten with full 8-ball rules.
 
 (() => {
     const canvas = document.getElementById('table');
@@ -7,69 +7,208 @@
     const W = canvas.width;
     const H = canvas.height;
 
-    // Felt playfield bounds (the wooden rail frame lives outside).
+    // Felt playfield bounds
     const F = { x: 30, y: 30, w: W - 60, h: H - 60 };
     const FX2 = F.x + F.w;
     const FY2 = F.y + F.h;
 
-    const POCKET_R = 30;
+    const POCKET_R = 26;
     const POCKETS = [
         { x: F.x,           y: F.y  },
-        { x: F.x + F.w / 2, y: F.y  },
+        { x: F.x + F.w / 2, y: F.y - 4 },
         { x: FX2,           y: F.y  },
         { x: F.x,           y: FY2  },
-        { x: F.x + F.w / 2, y: FY2  },
+        { x: F.x + F.w / 2, y: FY2 + 4 },
         { x: FX2,           y: FY2  },
     ];
 
-    const BALL_R = 15;
+    const BALL_R = 12;
     const FRICTION = 0.986;
-    const MIN_SPEED = 0.12;
-    const MAX_POWER = 25;
-    const CHARGE_RATE = 0.15;
+    const MIN_SPEED = 0.1;
+    const MAX_POWER = 22;
+    const CHARGE_RATE = 0.12;
 
-    const BALL_COLORS = [
-        '#e74c3c', // 1 red
-        '#3498db', // 2 blue
-        '#f1c40f', // 3 yellow
-        '#27ae60', // 4 green
-        '#9b59b6', // 5 purple
-        '#e67e22', // 6 orange
-    ];
+    // Standard 8-ball colors
+    // Solids 1-7, 8-ball, Stripes 9-15
+    const BALL_COLORS = {
+        1:  '#f1c40f', // yellow
+        2:  '#2980b9', // blue
+        3:  '#e74c3c', // red
+        4:  '#8e44ad', // purple
+        5:  '#e67e22', // orange
+        6:  '#27ae60', // green
+        7:  '#8b0000', // dark red / maroon
+        8:  '#111111', // black (8-ball)
+        9:  '#f1c40f', // yellow stripe
+        10: '#2980b9', // blue stripe
+        11: '#e74c3c', // red stripe
+        12: '#8e44ad', // purple stripe
+        13: '#e67e22', // orange stripe
+        14: '#27ae60', // green stripe
+        15: '#8b0000', // dark red stripe
+    };
+
+    function isSolid(num) { return num >= 1 && num <= 7; }
+    function isStripe(num) { return num >= 9 && num <= 15; }
+    function isEightBall(num) { return num === 8; }
 
     // -----------------------------------------------------------------------
-    // Ball class (gameplay)
+    // Ball class
     // -----------------------------------------------------------------------
     class Ball {
-        constructor(x, y, color, number) {
+        constructor(x, y, number) {
             this.x = x; this.y = y;
             this.vx = 0; this.vy = 0;
-            this.color = color;
             this.number = number;
+            this.color = number === 0 ? '#ffffff' : BALL_COLORS[number];
             this.isCue = number === 0;
             this.potted = false;
         }
     }
 
     // -----------------------------------------------------------------------
-    // CineBall — animated ball for intro / outro cinematics
+    // State
+    // -----------------------------------------------------------------------
+    const state = {
+        balls: [],
+        aim: { x: F.x + F.w * 0.75, y: F.y + F.h * 0.5 },
+        power: 0,
+        charging: false,
+        moving: false,
+        gameOver: false,
+        message: '',
+        muted: false,
+        phase: 'intro', // 'intro' | 'play'
+
+        // Turn management
+        turn: 'player',        // 'player' | 'ai'
+        aiState: 'idle',
+        aiTimer: 0,
+        aiShot: null,
+        aiAimProgress: 0,
+
+        // 8-ball specific
+        isBreakShot: true,
+        playerGroup: null,     // 'solids' | 'stripes' | null (not yet assigned)
+        aiGroup: null,
+        playerPotted: [],      // numbers of balls potted by player
+        aiPotted: [],
+        ballInHand: false,     // after foul, active player can place cue
+        placingCue: false,     // currently placing cue ball
+
+        // Shot tracking
+        firstHitBall: null,    // first object ball the cue touched
+        pottedThisShot: [],    // balls potted this shot
+        cuePotted: false,
+        railHitAfterContact: false,
+        anyBallHit: false,
+
+        // Intro
+        cineBalls: [],
+        pendingFullReset: true,
+
+        // Score tracking
+        playerWins: 0,
+        aiWins: 0,
+    };
+
+    function setMessage(s) {
+        state.message = s;
+        const msgEl = document.getElementById('message');
+        if (msgEl) msgEl.textContent = s;
+    }
+
+    // -----------------------------------------------------------------------
+    // Rack positions — standard triangle, 5 rows, 15 balls
+    // 8-ball in center (row 3, pos 2), one solid and one stripe at back corners
+    // -----------------------------------------------------------------------
+    function rackBalls() {
+        const ox = F.x + F.w * 0.72;
+        const oy = F.y + F.h * 0.5;
+        const d = BALL_R * 2 + 0.5;
+        const hx = Math.sqrt(3) / 2 * d;
+
+        // Triangle positions: row 0 (apex, 1 ball) .. row 4 (5 balls)
+        const positions = [];
+        for (let row = 0; row < 5; row++) {
+            for (let col = 0; col <= row; col++) {
+                const x = ox + row * hx;
+                const y = oy + (col - row / 2) * d;
+                positions.push({ x, y, row, col });
+            }
+        }
+
+        // Place balls with 8-ball constraints:
+        // Position index in triangle:
+        // Row 0: [0]
+        // Row 1: [1, 2]
+        // Row 2: [3, 4, 5]
+        // Row 3: [6, 7, 8, 9]
+        // Row 4: [10, 11, 12, 13, 14]
+        // 8-ball goes to index 4 (row 2, center)
+        // Back corners (indices 10 and 14) must be one solid and one stripe
+
+        const solids = [1, 2, 3, 4, 5, 6, 7];
+        const stripes = [9, 10, 11, 12, 13, 14, 15];
+
+        // Shuffle
+        for (let i = solids.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [solids[i], solids[j]] = [solids[j], solids[i]];
+        }
+        for (let i = stripes.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [stripes[i], stripes[j]] = [stripes[j], stripes[i]];
+        }
+
+        const arrangement = new Array(15).fill(0);
+        // 8-ball at index 4
+        arrangement[4] = 8;
+        // Back corners: one solid, one stripe
+        if (Math.random() < 0.5) {
+            arrangement[10] = solids.pop();
+            arrangement[14] = stripes.pop();
+        } else {
+            arrangement[10] = stripes.pop();
+            arrangement[14] = solids.pop();
+        }
+        // Apex (index 0) is random
+        // Fill remaining slots alternating
+        const remaining = [...solids, ...stripes];
+        for (let i = remaining.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+        }
+
+        let rIdx = 0;
+        for (let i = 0; i < 15; i++) {
+            if (arrangement[i] === 0) {
+                arrangement[i] = remaining[rIdx++];
+            }
+        }
+
+        const result = [];
+        for (let i = 0; i < 15; i++) {
+            result.push({ x: positions[i].x, y: positions[i].y, number: arrangement[i] });
+        }
+        return result;
+    }
+
+    // -----------------------------------------------------------------------
+    // CineBall — animated ball for intro
     // -----------------------------------------------------------------------
     class CineBall {
-        constructor({ x, y, tx, ty, color, number, delay, speed, exitVx, exitVy }) {
+        constructor({ x, y, tx, ty, color, number, delay, speed }) {
             this.x = x; this.y = y;
             this.tx = tx; this.ty = ty;
             this.color = color;
             this.number = number;
             this.isCue = number === 0;
             this.delay = delay;
-            this.speed = speed || 9;
+            this.speed = speed || 7;
             this.arrived = false;
             this.active = false;
-            this.exitVx = exitVx || 0;
-            this.exitVy = exitVy || 0;
-            this.gone = false;
         }
-
         stepIntro() {
             if (this.arrived) return;
             if (this.delay > 0) { this.delay--; return; }
@@ -85,112 +224,6 @@
                 this.y += (dy / d) * this.speed;
             }
         }
-
-        stepOutro() {
-            if (this.gone) return;
-            if (this.delay > 0) { this.delay--; return; }
-            this.active = true;
-            this.exitVx *= 1.045;
-            this.exitVy *= 1.045;
-            this.x += this.exitVx;
-            this.y += this.exitVy;
-            if (this.x < -100 || this.x > W + 100 || this.y < -100 || this.y > H + 100) {
-                this.gone = true;
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Entry patterns for numbered balls (6 slots)
-    // -----------------------------------------------------------------------
-    const ENTRY_PATTERNS = [
-        [{ex:-60,ey:null},{ex:-60,ey:null},{ex:-60,ey:null},
-         {ex:-60,ey:null},{ex:-60,ey:null},{ex:-60,ey:null}],
-        [{ex:W+60,ey:null},{ex:W+60,ey:null},{ex:W+60,ey:null},
-         {ex:W+60,ey:null},{ex:W+60,ey:null},{ex:W+60,ey:null}],
-        [{ex:null,ey:-60},{ex:null,ey:-60},{ex:null,ey:-60},
-         {ex:null,ey:-60},{ex:null,ey:-60},{ex:null,ey:-60}],
-        [{ex:null,ey:H+60},{ex:null,ey:H+60},{ex:null,ey:H+60},
-         {ex:null,ey:H+60},{ex:null,ey:H+60},{ex:null,ey:H+60}],
-        [{ex:null,ey:-60},{ex:null,ey:H+60},{ex:null,ey:-60},
-         {ex:null,ey:H+60},{ex:null,ey:-60},{ex:null,ey:H+60}],
-        [{ex:-60,ey:null},{ex:W+60,ey:null},{ex:-60,ey:null},
-         {ex:W+60,ey:null},{ex:-60,ey:null},{ex:W+60,ey:null}],
-        [{ex:-60,ey:-60},{ex:-60,ey:-60},{ex:W+60,ey:-60},
-         {ex:W+60,ey:-60},{ex:-60,ey:H+60},{ex:W+60,ey:H+60}],
-        [{ex:-60,ey:-60},{ex:-60,ey:-60},{ex:-60,ey:-60},
-         {ex:-60,ey:-60},{ex:-60,ey:-60},{ex:-60,ey:-60}],
-        [{ex:-60,ey:null},{ex:W+60,ey:null},{ex:null,ey:-60},
-         {ex:null,ey:H+60},{ex:-60,ey:H+60},{ex:W+60,ey:-60}],
-        [{ex:W+60,ey:H+60},{ex:W+60,ey:H+60},{ex:W+60,ey:H+60},
-         {ex:W+60,ey:H+60},{ex:W+60,ey:H+60},{ex:W+60,ey:H+60}],
-    ];
-
-    // -----------------------------------------------------------------------
-    // State
-    // -----------------------------------------------------------------------
-    // AI plays at maximum skill — no aim scatter.
-
-    const state = {
-        balls: [],
-        aim: { x: F.x + F.w * 0.75, y: F.y + F.h * 0.5 },
-        power: 0,
-        charging: false,
-        moving: false,
-        score: 0,
-        lives: 5,
-        shotsLeft: 5,
-        frame: 1,
-        potsThisShot: 0,
-        cueFouled: false,
-        hitBall: false, 
-        gameOver: false,
-        won: false,
-        message: '',
-        muted: false,
-        phase: 'intro',
-        cineBalls: [],
-        pendingFullReset: true,
-        // ── turn management ──
-        turn: 'player',      // 'player' | 'ai'
-        aiState: 'idle',     // 'idle' | 'thinking' | 'aiming' | 'shooting'
-        aiTimer: 0,          // countdown frames
-        aiShot: null,        // { aimX, aimY, power } decided shot
-        aiAimProgress: 0,    // 0..1 smooth aim animation
-        // scores per player
-        playerScore: 0,
-        aiScore: 0,
-        playerLives: 5,
-        aiLives: 5,
-        // frame wins
-        playerWins: 0,
-        aiWins: 0,
-        // who won the last frame (starts next frame)
-        lastFrameWinner: 'player',
-    };
-
-    function setMessage(s) {
-        state.message = s;
-        const msgEl = document.getElementById('message');
-        if (msgEl) msgEl.textContent = s;
-    }
-
-    // -----------------------------------------------------------------------
-    // Rack positions
-    // -----------------------------------------------------------------------
-    function rackBalls() {
-        const ox = F.x + F.w * 0.7;
-        const oy = F.y + F.h * 0.5;
-        const d = BALL_R * 2 + 1;
-        const hx = Math.sqrt(3) / 2 * d;
-        return [
-            [ox,          oy      ],
-            [ox + hx,     oy - d / 2],
-            [ox + hx,     oy + d / 2],
-            [ox + 2*hx,   oy - d  ],
-            [ox + 2*hx,   oy      ],
-            [ox + 2*hx,   oy + d  ],
-        ];
     }
 
     // -----------------------------------------------------------------------
@@ -199,96 +232,79 @@
     function buildIntro() {
         state.cineBalls = [];
         const rack = rackBalls();
-        const patIdx = (state.frame - 1) % ENTRY_PATTERNS.length;
-        const pattern = ENTRY_PATTERNS[patIdx];
+        state._rackData = rack; // save for applyReset
 
-        const BALL_DELAY = 22;
-        const BALL_SPEED = 5.5;
-        for (let i = 0; i < 6; i++) {
-            const [tx, ty] = rack[i];
-            const ep = pattern[i];
-            const sx = ep.ex !== null ? ep.ex : tx;
-            const sy = ep.ey !== null ? ep.ey : ty;
+        const BALL_DELAY = 10;
+        const BALL_SPEED = 8;
+        for (let i = 0; i < rack.length; i++) {
+            const { x: tx, y: ty, number } = rack[i];
+            // Enter from left
+            const sx = -40;
+            const sy = ty;
             state.cineBalls.push(new CineBall({
-                x: sx, y: sy,
-                tx, ty,
-                color: BALL_COLORS[i], number: i + 1,
+                x: sx, y: sy, tx, ty,
+                color: number === 0 ? '#ffffff' : BALL_COLORS[number],
+                number,
                 delay: i * BALL_DELAY,
                 speed: BALL_SPEED,
             }));
         }
 
-        const cueDelay = 6 * BALL_DELAY + 160;
+        // Cue ball enters last
+        const cueDelay = rack.length * BALL_DELAY + 40;
         const cueX = F.x + F.w * 0.25;
         const cueY = F.y + F.h * 0.5;
         state.cineBalls.push(new CineBall({
-            x: -60, y: cueY,
-            tx: cueX, ty: cueY,
+            x: -40, y: cueY, tx: cueX, ty: cueY,
             color: '#ffffff', number: 0,
             delay: cueDelay, speed: BALL_SPEED,
         }));
     }
 
     // -----------------------------------------------------------------------
-    // applyReset — applies gameplay state after intro finishes
+    // applyReset
     // -----------------------------------------------------------------------
     function applyReset(fullReset) {
+        const rack = state._rackData || rackBalls();
         state.balls = [];
-        const rack = rackBalls();
-        state.balls.push(new Ball(F.x + F.w * 0.25, F.y + F.h * 0.5, '#ffffff', 0));
-        for (let i = 0; i < 6; i++) {
-            state.balls.push(new Ball(rack[i][0], rack[i][1], BALL_COLORS[i], i + 1));
+        state.balls.push(new Ball(F.x + F.w * 0.25, F.y + F.h * 0.5, 0)); // cue
+        for (const { x, y, number } of rack) {
+            state.balls.push(new Ball(x, y, number));
         }
+
         if (fullReset) {
-            state.score = 0;
-            state.playerScore = 0;
-            state.aiScore = 0;
-            state.lives = 5;
-            state.playerLives = 5;
-            state.aiLives = 5;
-            state.frame = 1;
-            state.playerWins = 0;
-            state.aiWins = 0;
-            state.lastFrameWinner = 'player';
+            state.playerGroup = null;
+            state.aiGroup = null;
+            state.playerPotted = [];
+            state.aiPotted = [];
         }
-        state.shotsLeft = 5;
+
         state.power = 0;
         state.charging = false;
         state.moving = false;
-        state.potsThisShot = 0;
-        state.cueFouled = false;
         state.gameOver = false;
-        state.won = false;
+        state.isBreakShot = true;
+        state.ballInHand = false;
+        state.placingCue = false;
+        state.firstHitBall = null;
+        state.pottedThisShot = [];
+        state.cuePotted = false;
+        state.railHitAfterContact = false;
+        state.anyBallHit = false;
         state.aim = { x: F.x + F.w * 0.75, y: F.y + F.h * 0.5 };
-        // Frame starts with whoever won the previous frame
-        state.turn = state.lastFrameWinner;
-        if (state.turn === 'ai') {
-            state.aiState = 'thinking';
-            state.aiTimer = 60;
-            setMessage('Ход компьютера.');
-        } else {
-            state.aiState = 'idle';
-            setMessage('Ваш ход.');
-        }
+        state.turn = 'player';
+        state.aiState = 'idle';
         state.aiShot = null;
+        setMessage('Ваш ход. Разбивайте!');
     }
 
-    // -----------------------------------------------------------------------
-    // resetFrame — public function to reset the game
-    // -----------------------------------------------------------------------
-    function resetFrame(fullReset) {
+    function resetGame(fullReset) {
         state.pendingFullReset = fullReset;
         if (fullReset) {
-            state.score = 0;
-            state.playerScore = 0;
-            state.aiScore = 0;
-            state.lives = 5;
-            state.playerLives = 5;
-            state.aiLives = 5;
-            state.frame = 1;
-            state.playerWins = 0;
-            state.aiWins = 0;
-            state.lastFrameWinner = 'player';
+            state.playerGroup = null;
+            state.aiGroup = null;
+            state.playerPotted = [];
+            state.aiPotted = [];
         }
         buildIntro();
         state.phase = 'intro';
@@ -296,7 +312,6 @@
         state.charging = false;
         state.power = 0;
         state.gameOver = false;
-        state.won = false;
         setMessage('');
     }
 
@@ -356,8 +371,7 @@
 
     function soundBallHit(speed) {
         const s = Math.min(1, speed / 18);
-        const freq = 900 + s * 600;
-        playTone({ freq, endFreq: freq * 0.55, duration: 0.07, type: 'triangle', gain: 0.08 + s * 0.18 });
+        playTone({ freq: 900 + s * 600, endFreq: (900 + s * 600) * 0.55, duration: 0.07, type: 'triangle', gain: 0.08 + s * 0.18 });
         playNoise({ duration: 0.04, filterFreq: 3500, q: 4, gain: 0.05 + s * 0.12 });
     }
     function soundWall(speed) {
@@ -369,11 +383,9 @@
         playTone({ freq: 520, endFreq: 110, duration: 0.38, type: 'sine', gain: 0.22 });
         playNoise({ duration: 0.22, filterFreq: 300, filterType: 'lowpass', q: 1, gain: 0.08 });
     }
-    function soundCueFoul() {
+    function soundFoul() {
         if (!audioCtx || state.muted) return;
-        // "ту - тууууу": short high note, then longer low note dropping further
         const now = audioCtx.currentTime;
-        // First note: "ту" — short, starts at 420 Hz drops to 260
         const o1 = audioCtx.createOscillator();
         const g1 = audioCtx.createGain();
         o1.type = 'sine';
@@ -384,7 +396,6 @@
         g1.gain.exponentialRampToValueAtTime(0.0005, now + 0.22);
         o1.connect(g1).connect(audioCtx.destination);
         o1.start(now); o1.stop(now + 0.23);
-        // Gap ~0.10s, then second note: "тууууу" — longer, starts at 300 drops to 90
         const o2 = audioCtx.createOscillator();
         const g2 = audioCtx.createGain();
         o2.type = 'sine';
@@ -408,10 +419,17 @@
         playTone({ freq: 260, endFreq: 160, duration: 0.06, type: 'triangle', gain: 0.07 });
         playNoise({ duration: 0.03, filterFreq: 800, q: 3, gain: 0.04 });
     }
+    function soundWin() {
+        playTone({ freq: 523, duration: 0.15, type: 'sine', gain: 0.25 });
+        setTimeout(() => playTone({ freq: 659, duration: 0.15, type: 'sine', gain: 0.25 }), 150);
+        setTimeout(() => playTone({ freq: 784, duration: 0.3, type: 'sine', gain: 0.3 }), 300);
+    }
 
     // -----------------------------------------------------------------------
     // Physics
     // -----------------------------------------------------------------------
+    let ballsTouchedRail = new Set();
+
     function stepBalls() {
         for (const b of state.balls) {
             if (b.potted) continue;
@@ -426,9 +444,6 @@
         const dist = Math.hypot(dx, dy);
         if (dist === 0 || dist >= 2 * BALL_R) return;
 
-        // Sub-step: back up the faster-moving ball to the exact moment of contact
-        // so the collision normal is geometrically precise (fixes trajectory mismatch
-        // on thin cuts where overshoot reaches 12+ degrees).
         const spdA = Math.hypot(a.vx, a.vy);
         const spdB = Math.hypot(b.vx, b.vy);
         if (spdA > 0 || spdB > 0) {
@@ -447,7 +462,6 @@
         const dist2 = Math.hypot(dx2, dy2) || 1;
         const nx = dx2 / dist2, ny = dy2 / dist2;
 
-        // Push apart to remove any residual overlap
         const overlap = 2 * BALL_R - dist2;
         if (overlap > 0) {
             a.x -= nx * overlap / 2; a.y -= ny * overlap / 2;
@@ -460,23 +474,38 @@
         a.vx -= vn * nx; a.vy -= vn * ny;
         b.vx += vn * nx; b.vy += vn * ny;
         soundBallHit(Math.abs(vn));
-        if (a.isCue || b.isCue) state.hitBall = true; 
+
+        // Track first hit for foul detection
+        if (a.isCue && !b.isCue && state.firstHitBall === null) {
+            state.firstHitBall = b;
+            state.anyBallHit = true;
+        } else if (b.isCue && !a.isCue && state.firstHitBall === null) {
+            state.firstHitBall = a;
+            state.anyBallHit = true;
+        }
     }
 
     function nearPocket(b) {
         for (const p of POCKETS)
-            if (Math.hypot(b.x - p.x, b.y - p.y) < POCKET_R + BALL_R * 0.5) return true;
+            if (Math.hypot(b.x - p.x, b.y - p.y) < POCKET_R + BALL_R * 0.4) return true;
         return false;
     }
 
     function wallCollide(b) {
         if (nearPocket(b)) return;
-        const e = 0.88; let bounced = false, speed = 0;
+        const e = 0.85; let bounced = false, speed = 0;
         if (b.x - BALL_R < F.x)  { b.x = F.x  + BALL_R; speed = Math.abs(b.vx); b.vx = -b.vx * e; bounced = true; }
         if (b.x + BALL_R > FX2)  { b.x = FX2  - BALL_R; speed = Math.abs(b.vx); b.vx = -b.vx * e; bounced = true; }
         if (b.y - BALL_R < F.y)  { b.y = F.y  + BALL_R; speed = Math.abs(b.vy); b.vy = -b.vy * e; bounced = true; }
         if (b.y + BALL_R > FY2)  { b.y = FY2  - BALL_R; speed = Math.abs(b.vy); b.vy = -b.vy * e; bounced = true; }
-        if (bounced && speed > 0.6) soundWall(speed);
+        if (bounced) {
+            if (speed > 0.6) soundWall(speed);
+            // Track rail contact for foul detection (must happen after ball contact)
+            if (state.anyBallHit) {
+                ballsTouchedRail.add(b);
+                state.railHitAfterContact = true;
+            }
+        }
     }
 
     function checkPocket(b) {
@@ -490,17 +519,13 @@
 
     function onPocket(b) {
         if (b.isCue) {
-            soundCueFoul();
-            state.cueFouled = true;
+            soundFoul();
+            state.cuePotted = true;
         } else {
             soundPocket();
-            state.potsThisShot++;
-            if (state.turn === 'player') {
-    state.playerScore += b.number * 10 * state.frame;
-    state.score = state.playerScore;
-} else {
-    state.aiScore += b.number * 10 * state.frame;
-}
+            state.pottedThisShot.push(b);
+            // A potted ball also counts as "rail contact" for foul purposes
+            state.railHitAfterContact = true;
         }
     }
 
@@ -518,97 +543,364 @@
         if (state.moving && !moving) { state.moving = false; onShotEnd(); }
     }
 
-    function onShotEnd() {
-        const potted  = state.potsThisShot;
-        const fouled  = state.cueFouled;
-        const isAI    = state.turn === 'ai';
-        let msg = '';
+    // -----------------------------------------------------------------------
+    // 8-Ball shot resolution
+    // -----------------------------------------------------------------------
+    function getPlayerGroup(who) {
+        return who === 'player' ? state.playerGroup : state.aiGroup;
+    }
 
-        if (fouled) {
-            const cue = state.balls.find(b => b.isCue);
-            cue.potted = false;
-            cue.x = F.x + F.w * 0.25; cue.y = F.y + F.h * 0.5;
-            cue.vx = 0; cue.vy = 0;
-            state.cueFouled = false;
-            if (isAI) {
-                state.aiLives = Math.max(0, state.aiLives - 1);
-                msg = 'Компьютер потерял биток! −1 жизнь ИИ.';
-            } else {
-                state.playerLives = Math.max(0, state.playerLives - 1);
-                msg = 'Потерян биток! −1 жизнь.';
+    function getAllGroupBallsPotted(who, excludeBalls) {
+        const group = getPlayerGroup(who);
+        if (!group) return false;
+        // excludeBalls: balls potted this shot - pretend they are still on table
+        // so we evaluate the pre-shot state (before this shot's balls dropped)
+        const excluded = excludeBalls ? new Set(excludeBalls) : new Set();
+        const groupBallsOnTable = state.balls.filter(b => {
+            if (isEightBall(b.number)) return false;
+            const stillOnTable = !b.potted || excluded.has(b); // potted-this-shot count as still on table
+            if (!stillOnTable) return false;
+            if (group === 'solids') return isSolid(b.number);
+            return isStripe(b.number);
+        });
+        return groupBallsOnTable.length === 0;
+    }
+
+    function canShootEightBall(who, excludeBalls) {
+        return getAllGroupBallsPotted(who, excludeBalls);
+    }
+
+    function onShotEnd() {
+        const isAI = state.turn === 'ai';
+        const who = state.turn;
+        const opponent = isAI ? 'player' : 'ai';
+        const potted = state.pottedThisShot;
+        const cuePotted = state.cuePotted;
+        const firstHit = state.firstHitBall;
+        let foul = false;
+        let loseGame = false;
+        let winGame = false;
+        let msg = '';
+        let eightPotted = potted.some(b => isEightBall(b.number));
+
+        // --- Break shot special rules ---
+        if (state.isBreakShot) {
+            state.isBreakShot = false;
+
+            if (cuePotted) {
+                foul = true;
+                msg = (isAI ? 'Снеговик' : 'Вы') + ': фол на разбитии (биток в лузу). ';
             }
-        } else if (potted === 0) {
-            if (!state.hitBall) {
-                if (isAI) {
-                    state.aiLives = Math.max(0, state.aiLives - 1);
-                    msg = 'Компьютер не задел шары! −1 жизнь ИИ.';
-                } else {
-                    state.playerLives = Math.max(0, state.playerLives - 1);
-                    msg = 'Не задет ни один шар! −1 жизнь.';
+
+            if (eightPotted) {
+                // 8-ball potted on break: re-rack (special rule)
+                msg = 'Шар 8 забит на разбитии! Переигровка. ';
+                resetGame(true);
+                updateHUD();
+                setMessage(msg);
+                return;
+            }
+
+            // Assign groups if any non-8 ball was potted
+            if (!foul && potted.length > 0) {
+                const solidsPotted = potted.filter(b => isSolid(b.number));
+                const stripesPotted = potted.filter(b => isStripe(b.number));
+
+                if (solidsPotted.length > 0 || stripesPotted.length > 0) {
+                    if (solidsPotted.length > stripesPotted.length) {
+                        assignGroups(who, 'solids');
+                    } else if (stripesPotted.length > solidsPotted.length) {
+                        assignGroups(who, 'stripes');
+                    } else {
+                        // Equal: assign solids to breaker
+                        assignGroups(who, 'solids');
+                    }
+                }
+
+                // Record potted balls
+                for (const b of potted) {
+                    recordPottedBall(who, b.number);
+                }
+
+                if (!foul) {
+                    msg = (isAI ? 'Снеговик' : 'Вы') + ' забили на разбитии. ';
+                    // Breaker continues
+                    startTurn(who, msg);
+                    return;
+                }
+            }
+
+            if (foul) {
+                respotCueBall();
+                switchTurnWithBallInHand(opponent, msg);
+                return;
+            }
+
+            // No balls potted on break — switch turn
+            msg = (isAI ? 'Снеговик' : 'Вы') + ': ни одного шара на разбитии. ';
+            switchTurn(opponent, msg);
+            return;
+        }
+
+        // --- Normal shot rules ---
+        const myGroup = getPlayerGroup(who);
+
+        // Check fouls
+        if (cuePotted) {
+            foul = true;
+            msg += (isAI ? 'Снеговик' : 'Вы') + ': биток в лузу! Фол. ';
+        }
+
+        if (!state.anyBallHit) {
+            foul = true;
+            msg += (isAI ? 'Снеговик' : 'Вы') + ': не задет ни один шар! Фол. ';
+        } else if (firstHit && myGroup) {
+            // Must hit own group first (unless shooting at 8)
+            // Pass potted-this-shot so we check state BEFORE this shot's balls dropped
+            const shootingEight = canShootEightBall(who, potted);
+            if (shootingEight) {
+                if (!isEightBall(firstHit.number)) {
+                    foul = true;
+                    msg += (isAI ? 'Снеговик' : 'Вы') + ': нужно бить по шару 8! Фол. ';
                 }
             } else {
-                msg = isAI ? 'Компьютер промахнулся.' : 'Промах.';
-            }
-        } else {
-            if (isAI) {
-             //   state.aiScore += potted * 10 * state.frame;
-                msg = `Компьютер забил: ${potted} шар(а).`;
-            } else {
-                msg = `Забито шаров: ${potted}.`;
+                if (!isBallInMyGroup(who, firstHit.number)) {
+                    foul = true;
+                    msg += (isAI ? 'Снеговик' : 'Вы') + ': первое касание не своего шара! Фол. ';
+                }
             }
         }
 
-        const remaining = state.balls.filter(b => !b.isCue && !b.potted).length;
-        if (remaining === 0) {
-            // Record who won this frame
+        // Rail rule: after contact, at least one ball must touch a rail or be potted
+        if (state.anyBallHit && !state.railHitAfterContact && potted.length === 0 && !cuePotted) {
+            foul = true;
+            msg += 'Ни один шар не коснулся борта после контакта! Фол. ';
+        }
+
+        // Check 8-ball potted
+        if (eightPotted) {
+            if (!canShootEightBall(who)) {
+                // 8-ball potted too early — lose
+                loseGame = true;
+                msg = (isAI ? 'Снеговик' : 'Вы') + ' забили шар 8 раньше времени! ';
+            } else if (cuePotted) {
+                // 8-ball + cue potted — lose
+                loseGame = true;
+                msg = (isAI ? 'Снеговик' : 'Вы') + ' забили шар 8, но биток тоже в лузе! ';
+            } else if (!state.anyBallHit) {
+                // No contact at all — lose
+                loseGame = true;
+                msg += (isAI ? 'Снеговик' : 'Вы') + ' забили шар 8 с фолом (нет контакта)! ';
+            } else {
+                // Legal 8-ball pot — win!
+                winGame = true;
+                msg = (isAI ? 'Снеговик' : 'Вы') + ' забили шар 8! ';
+            }
+        }
+
+        if (loseGame) {
+            if (isAI) {
+                state.playerWins++;
+                endGame(true, msg + 'Вы выиграли!');
+            } else {
+                state.aiWins++;
+                endGame(false, msg + 'ИИ выиграл!');
+            }
+            return;
+        }
+
+        if (winGame) {
             if (isAI) {
                 state.aiWins++;
-                state.lastFrameWinner = 'ai';
+                endGame(false, msg + 'ИИ выиграл!');
             } else {
                 state.playerWins++;
-                state.lastFrameWinner = 'player';
+                endGame(true, msg + 'Вы выиграли!');
             }
-            state.frame++;
-            resetFrame(false);
-            updateHUD();
             return;
         }
 
-        if (state.playerLives <= 0 || state.aiLives <= 0) {
-            state.gameOver = true;
-            state.score = state.playerScore;
-            openGameOverModalPool();
+        // Record potted balls
+        let ownBallPotted = false;
+        for (const b of potted) {
+            if (isEightBall(b.number)) continue;
+            recordPottedBall(who, b.number);
+            if (myGroup && isBallInMyGroup(who, b.number)) ownBallPotted = true;
+        }
+
+        // Assign groups if not yet assigned and a ball was potted
+        if (!state.playerGroup && potted.length > 0) {
+            const solidsPotted = potted.filter(b => isSolid(b.number));
+            const stripesPotted = potted.filter(b => isStripe(b.number));
+            if (solidsPotted.length > 0 && stripesPotted.length === 0) {
+                assignGroups(who, 'solids');
+                ownBallPotted = true;
+            } else if (stripesPotted.length > 0 && solidsPotted.length === 0) {
+                assignGroups(who, 'stripes');
+                ownBallPotted = true;
+            } else if (solidsPotted.length > 0 && stripesPotted.length > 0) {
+                // Mixed: assign based on which has more
+                if (solidsPotted.length >= stripesPotted.length) {
+                    assignGroups(who, 'solids');
+                } else {
+                    assignGroups(who, 'stripes');
+                }
+                ownBallPotted = true;
+            }
+        }
+
+        if (foul) {
+            if (cuePotted) respotCueBall();
+            switchTurnWithBallInHand(opponent, msg);
             return;
         }
 
-        if (potted === 0 || fouled) {
-            state.turn = isAI ? 'player' : 'ai';
-            if (state.turn === 'ai') {
-                state.aiState = 'thinking';
-                state.aiTimer = 70;
-                msg += ' Ход компьютера.';
-            } else {
-                state.aiState = 'idle';
-                msg += ' Ваш ход.';
-            }
+        if (potted.length > 0 && ownBallPotted) {
+            msg += (isAI ? 'Снеговик' : 'Вы') + ' забили. ';
+            if (canShootEightBall(who)) msg += 'Можно бить шар 8! '; // no exclusions: balls are already recorded
+            startTurn(who, msg);
+        } else if (potted.length > 0 && !ownBallPotted) {
+            msg += (isAI ? 'Снеговик' : 'Вы') + ` забили шар соперника. Переход хода. `;
+            // Opponent's balls were potted — still counts, but turn switches
+            switchTurn(opponent, msg);
         } else {
-            if (state.turn === 'ai') {
-                state.aiState = 'thinking';
-                state.aiTimer = 45;
-            }
+            msg += (isAI ? 'Снеговик' : 'Вы') + ': промах. ';
+            switchTurn(opponent, msg);
         }
+    }
 
+    function isBallInMyGroup(who, num) {
+        const group = getPlayerGroup(who);
+        if (!group) return true; // groups not yet assigned, any ball is fine
+        if (group === 'solids') return isSolid(num);
+        return isStripe(num);
+    }
+
+    function assignGroups(who, group) {
+        if (who === 'player') {
+            state.playerGroup = group;
+            state.aiGroup = group === 'solids' ? 'stripes' : 'solids';
+        } else {
+            state.aiGroup = group;
+            state.playerGroup = group === 'solids' ? 'stripes' : 'solids';
+        }
+    }
+
+    function recordPottedBall(who, num) {
+        if (isEightBall(num)) return;
+        if (who === 'player') {
+            if (!state.playerPotted.includes(num)) state.playerPotted.push(num);
+        } else {
+            if (!state.aiPotted.includes(num)) state.aiPotted.push(num);
+        }
+    }
+
+    function respotCueBall() {
+        const cue = state.balls.find(b => b.isCue);
+        if (cue) {
+            cue.potted = false;
+            cue.x = F.x + F.w * 0.25;
+            cue.y = F.y + F.h * 0.5;
+            cue.vx = 0; cue.vy = 0;
+        }
+    }
+
+    function switchTurn(to, msg) {
+        state.turn = to;
+        if (to === 'ai') {
+            state.aiState = 'thinking';
+            state.aiTimer = 60;
+            msg += 'Ход Снеговика.';
+        } else {
+            state.aiState = 'idle';
+            msg += 'Ваш ход.';
+        }
+        state.ballInHand = false;
+        state.placingCue = false;
         setMessage(msg);
     }
 
-    // -----------------------------------------------------------------------
-    // AI Engine
-    // -----------------------------------------------------------------------
+    function switchTurnWithBallInHand(to, msg) {
+        state.turn = to;
+        state.ballInHand = true;
+        if (to === 'ai') {
+            // AI places cue ball automatically
+            state.aiState = 'thinking';
+            state.aiTimer = 40;
+            state.ballInHand = false; // AI handles it internally
+            aiPlaceCueBall();
+            msg += 'Ход Снеговика (свободный шар).';
+        } else {
+            state.placingCue = true;
+            state.aiState = 'idle';
+            msg += 'Ваш ход. Кликните на стол для установки битка.';
+        }
+        setMessage(msg);
+    }
 
-    // Check if the path from (x1,y1) to (x2,y2) is clear of all balls except
-    // the cue and the target ball itself.
-    // Check if segment (x1,y1)→(x2,y2) is free of balls (excluding two).
-    // Uses BALL_R*2 clearance — the width a cue ball needs to pass through.
+    function startTurn(who, msg) {
+        state.turn = who;
+        if (who === 'ai') {
+            state.aiState = 'thinking';
+            state.aiTimer = 50;
+            msg += 'Ход Снеговика.';
+        } else {
+            state.aiState = 'idle';
+            msg += 'Ваш ход.';
+        }
+        state.ballInHand = false;
+        state.placingCue = false;
+        setMessage(msg);
+    }
+
+    function endGame(playerWon, msg) {
+        state.gameOver = true;
+        setMessage(msg);
+        if (playerWon) {
+            soundWin();
+            const modal = document.getElementById('winModal');
+            const text = document.getElementById('winText');
+            if (text) text.textContent = msg;
+            if (modal) modal.classList.add('active');
+        } else {
+            soundFoul();
+            const modal = document.getElementById('gameOverModal');
+            const title = document.getElementById('gameOverTitle');
+            const text = document.getElementById('gameOverText');
+            if (title) title.textContent = 'ПРОИГРЫШ';
+            if (text) text.textContent = msg;
+            if (modal) modal.classList.add('active');
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // AI
+    // -----------------------------------------------------------------------
+    function aiPlaceCueBall() {
+        // Place cue ball at a good position
+        const cue = state.balls.find(b => b.isCue);
+        if (!cue) return;
+        cue.potted = false;
+
+        // Try center-left area, find a spot not overlapping other balls
+        let bestX = F.x + F.w * 0.25;
+        let bestY = F.y + F.h * 0.5;
+
+        for (let attempt = 0; attempt < 50; attempt++) {
+            const tx = F.x + BALL_R + Math.random() * (F.w - 2 * BALL_R);
+            const ty = F.y + BALL_R + Math.random() * (F.h - 2 * BALL_R);
+            let valid = true;
+            for (const b of state.balls) {
+                if (b.isCue || b.potted) continue;
+                if (Math.hypot(tx - b.x, ty - b.y) < BALL_R * 2.5) { valid = false; break; }
+            }
+            if (valid) { bestX = tx; bestY = ty; break; }
+        }
+
+        cue.x = bestX; cue.y = bestY;
+        cue.vx = 0; cue.vy = 0;
+    }
+
     function pathClear(x1, y1, x2, y2, excludeA, excludeB) {
         const dx = x2 - x1, dy = y2 - y1;
         const len = Math.hypot(dx, dy);
@@ -618,7 +910,6 @@
             if (b.potted || b === excludeA || b === excludeB) continue;
             const tx = b.x - x1, ty = b.y - y1;
             const proj = tx * nx + ty * ny;
-            // Only check obstacles that lie along the segment (with small margin)
             if (proj < -BALL_R || proj > len + BALL_R) continue;
             const clampedProj = Math.max(0, Math.min(len, proj));
             const closestX = x1 + nx * clampedProj;
@@ -628,205 +919,126 @@
         return true;
     }
 
-    // Predict where the cue ball ends up after striking the ghost position.
-    // After elastic collision with equal masses, cue deflects along the tangent.
-    // Returns predicted {x, y} after travelling ~travelDist pixels.
-    function predictCuePos(cue, ghostX, ghostY, travelDist) {
-        const aimDx = ghostX - cue.x, aimDy = ghostY - cue.y;
-        const aimLen = Math.hypot(aimDx, aimDy);
-        if (aimLen < 1) return { x: cue.x, y: cue.y };
-        const ax = aimDx / aimLen, ay = aimDy / aimLen;   // unit aim vector
-        // Normal (ball→ghost direction, reversed = ghost→ball = n of collision)
-        // After collision cue velocity = original - vn*n  (vn = dot(v,n))
-        // Since speed=1 unit: cue_after = a - dot(a,n)*n  (tangential component)
-        // n points from ghost to target ball centre, i.e. opposite of aim-to-ghost
-        // But ghost IS the contact point — n = (ball-ghost)/|ball-ghost|
-        // At contact: ball-ghost direction = bpN (ball→pocket direction)
-        // So n = bpN, and cue tangential = a - dot(a,n)*n
-        // We don't have bpN here but: ghost = ball - bpN*2R → bpN = (ball-ghost)/2R
-        // We pass ghostX/ghostY and know ball pos from caller, so approximate:
-        // just use the perpendicular to aim as the cue's deflection direction
-        // (exact for head-on; approximate for cuts — good enough for scoring)
-        // Perpendicular to aim (choose sign so cue goes "off to the side")
-        const tx = -ay, ty = ax;   // one perpendicular; direction depends on cut
-        // The cue travels the tangential fraction of its original speed
-        // For scoring we just want approximate exit direction — use both sides
-        // and pick the one away from the pocket (safety heuristic)
-        let px = ghostX + tx * travelDist;
-        let py = ghostY + ty * travelDist;
-        // Clamp to felt
-        px = Math.max(F.x + BALL_R, Math.min(FX2 - BALL_R, px));
-        py = Math.max(F.y + BALL_R, Math.min(FY2 - BALL_R, py));
-        return { x: px, y: py };
-    }
-
-    // Count how many direct (ghost-ball) shots exist from position (px,py).
-    function countShotsFrom(px, py, excludeBall) {
-        let count = 0;
-        for (const b of state.balls) {
-            if (b.potted || b.isCue || b === excludeBall) continue;
-            for (const p of POCKETS) {
-                const dx = p.x - b.x, dy = p.y - b.y;
-                const len = Math.hypot(dx, dy);
-                if (len === 0) continue;
-                const gx = b.x - (dx / len) * BALL_R * 2;
-                const gy = b.y - (dy / len) * BALL_R * 2;
-                if (gx < F.x + BALL_R || gx > FX2 - BALL_R) continue;
-                if (gy < F.y + BALL_R || gy > FY2 - BALL_R) continue;
-                // Use a temporary cue object for pathClear
-                const fakeCue = { x: px, y: py, potted: false, isCue: true };
-                if (pathClear(px, py, gx, gy, fakeCue, b) &&
-                    pathClear(b.x, b.y, p.x, p.y, fakeCue, b)) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    // Score a candidate shot. Higher = better.
-    function scoreShot(cue, ball, pocket, ghostX, ghostY, bpLen) {
-        let s = 0;
-
-        // 1. Prefer valuable balls
-        s += ball.number * 8;
-
-        // 2. Prefer shorter ball-to-pocket distance (easier pot)
-        s -= bpLen * 0.04;
-
-        // 3. Prefer shorter cue-to-ghost distance (easier to reach)
-        const cueDist = Math.hypot(ghostX - cue.x, ghostY - cue.y);
-        s -= cueDist * 0.025;
-
-        // 4. Prefer more head-on shots (fuller contact = more predictable)
-        const aimDx = ghostX - cue.x, aimDy = ghostY - cue.y;
-        const aimLen = Math.hypot(aimDx, aimDy);
-        if (aimLen > 0) {
-            // nX/nY: direction from ghost to ball (= collision normal direction)
-            const nX = ball.x - ghostX, nY = ball.y - ghostY;
-            const nLen = Math.hypot(nX, nY);
-            if (nLen > 0) {
-                const dot = (aimDx / aimLen) * (nX / nLen) + (aimDy / aimLen) * (nY / nLen);
-                // dot=1 head-on, dot→0 thin cut. Reward fuller contact.
-                s += dot * 25;
-            }
-        }
-
-        // 5. Positional bonus (hard difficulty only): reward shots that leave
-        //    the cue ball near more follow-up opportunities.
-        if (aimLen > 0) {
-            const pred = predictCuePos(cue, ghostX, ghostY, 100);
-            // Check cue won't scratch (land near a pocket)
-            let scratch = false;
-            for (const p of POCKETS) {
-                if (Math.hypot(pred.x - p.x, pred.y - p.y) < POCKET_R * 2) {
-                    scratch = true; break;
-                }
-            }
-            if (scratch) {
-                s -= 35;
-            } else {
-                const nextOpts = countShotsFrom(pred.x, pred.y, ball);
-                s += Math.min(nextOpts * 4, 20);
-            }
-        }
-
-        return s;
-    }
-
-    // Find the best shot for the AI. Returns { aimX, aimY, power } or null.
     function aiFindBestShot() {
         const cue = state.balls.find(b => b.isCue && !b.potted);
         if (!cue) return null;
 
+        const myGroup = state.aiGroup;
+        const canShoot8 = canShootEightBall('ai');
+
+        // Determine which balls AI should target
+        function isTargetBall(b) {
+            if (b.isCue || b.potted) return false;
+            if (canShoot8) return isEightBall(b.number);
+            if (!myGroup) return !isEightBall(b.number); // groups not assigned yet
+            if (myGroup === 'solids') return isSolid(b.number);
+            return isStripe(b.number);
+        }
+
         let best = null, bestScore = -Infinity;
 
         for (const ball of state.balls) {
-            if (ball.isCue || ball.potted) continue;
+            if (!isTargetBall(ball)) continue;
 
             for (const pocket of POCKETS) {
-                // Vector from ball to pocket
                 const bpDx = pocket.x - ball.x, bpDy = pocket.y - ball.y;
                 const bpLen = Math.hypot(bpDx, bpDy);
                 if (bpLen < 1) continue;
                 const bpNx = bpDx / bpLen, bpNy = bpDy / bpLen;
 
-                // Ghost ball: where cue centre must be to pot this ball in this pocket
                 const ghostX = ball.x - bpNx * BALL_R * 2;
                 const ghostY = ball.y - bpNy * BALL_R * 2;
 
-                // Ghost must be inside the felt (with full ball margin)
                 if (ghostX < F.x + BALL_R || ghostX > FX2 - BALL_R) continue;
                 if (ghostY < F.y + BALL_R || ghostY > FY2 - BALL_R) continue;
 
-                // Path cue→ghost must be clear of other balls
                 if (!pathClear(cue.x, cue.y, ghostX, ghostY, cue, ball)) continue;
-
-                // Path ball→pocket must be clear of other balls
                 if (!pathClear(ball.x, ball.y, pocket.x, pocket.y, cue, ball)) continue;
 
-                const sc = scoreShot(cue, ball, pocket, ghostX, ghostY, bpLen);
+                let sc = 0;
+
+                // Prefer shorter ball-to-pocket
+                sc -= bpLen * 0.04;
+
+                // Prefer shorter cue-to-ghost
+                const cueDist = Math.hypot(ghostX - cue.x, ghostY - cue.y);
+                sc -= cueDist * 0.025;
+
+                // Prefer head-on shots
+                const aimDx = ghostX - cue.x, aimDy = ghostY - cue.y;
+                const aimLen = Math.hypot(aimDx, aimDy);
+                if (aimLen > 0) {
+                    const nX = ball.x - ghostX, nY = ball.y - ghostY;
+                    const nLen = Math.hypot(nX, nY);
+                    if (nLen > 0) {
+                        const dot = (aimDx / aimLen) * (nX / nLen) + (aimDy / aimLen) * (nY / nLen);
+                        sc += dot * 25;
+                    }
+                }
+
+                // Bonus for 8-ball when ready
+                if (isEightBall(ball.number) && canShoot8) sc += 30;
+
                 if (sc > bestScore) {
                     bestScore = sc;
-                    const cueDist = Math.hypot(ghostX - cue.x, ghostY - cue.y);
-                    // Power: enough to reach ghost AND send ball to pocket
-                    const power = Math.min(MAX_POWER, Math.max(5, (cueDist + bpLen) * 0.055));
+                    const power = Math.min(MAX_POWER, Math.max(4, (cueDist + bpLen) * 0.05));
                     best = { aimX: ghostX, aimY: ghostY, power, ball, pocket };
                 }
             }
         }
 
-        // Fallback: no pottable shot found — nudge the nearest ball to open up the rack
+        // Fallback: hit nearest legal ball
         if (!best) {
             let nearestDist = Infinity, nearest = null;
             for (const b of state.balls) {
-                if (b.isCue || b.potted) continue;
+                if (b.isCue || b.potted || isEightBall(b.number)) continue;
+                if (myGroup === 'solids' && !isSolid(b.number)) continue;
+                if (myGroup === 'stripes' && !isStripe(b.number)) continue;
                 const d = Math.hypot(b.x - cue.x, b.y - cue.y);
                 if (d < nearestDist) { nearestDist = d; nearest = b; }
             }
+            if (!nearest) {
+                // No legal balls, try any non-eight ball
+                for (const b of state.balls) {
+                    if (b.isCue || b.potted || isEightBall(b.number)) continue;
+                    const d = Math.hypot(b.x - cue.x, b.y - cue.y);
+                    if (d < nearestDist) { nearestDist = d; nearest = b; }
+                }
+            }
             if (nearest) {
-                const power = Math.min(MAX_POWER, Math.max(7, nearestDist * 0.06));
+                const power = Math.min(MAX_POWER, Math.max(6, nearestDist * 0.06));
                 best = { aimX: nearest.x, aimY: nearest.y, power, ball: nearest, pocket: null };
             }
         }
 
-        if (!best) return null;
-
-
-
         return best;
     }
 
-    // Update AI state machine each frame
     function updateAI() {
         if (state.turn !== 'ai' || state.moving || state.phase !== 'play') return;
-        if (state.gameOver || state.won) return;
+        if (state.gameOver) return;
 
         if (state.aiState === 'thinking') {
             state.aiTimer--;
             if (state.aiTimer <= 0) {
                 const shot = aiFindBestShot();
                 if (!shot) {
-                    // No shot found — pass turn
                     state.turn = 'player';
                     state.aiState = 'idle';
-                    setMessage('Компьютер не нашёл удара. Ваш ход.');
+                    setMessage('ИИ не нашёл удара. Ваш ход.');
                     return;
                 }
                 state.aiShot = shot;
                 state.aiState = 'aiming';
                 state.aiAimProgress = 0;
-                // Set aim to current cue position first (will animate)
                 const cue = state.balls.find(b => b.isCue && !b.potted);
                 if (cue) state.aim = { x: cue.x, y: cue.y };
             }
         } else if (state.aiState === 'aiming') {
-            // Smoothly animate aim toward target over ~40 frames
-            state.aiAimProgress = Math.min(1, state.aiAimProgress + 0.035);
+            state.aiAimProgress = Math.min(1, state.aiAimProgress + 0.03);
             const shot = state.aiShot;
             const cue = state.balls.find(b => b.isCue && !b.potted);
             if (!cue) return;
-            // Ease-in-out interpolation
             const t = state.aiAimProgress < 0.5
                 ? 2 * state.aiAimProgress * state.aiAimProgress
                 : 1 - Math.pow(-2 * state.aiAimProgress + 2, 2) / 2;
@@ -834,11 +1046,10 @@
                 x: cue.x + (shot.aimX - cue.x) * t,
                 y: cue.y + (shot.aimY - cue.y) * t,
             };
-            // Build up power visually
             state.power = shot.power * t;
             if (state.aiAimProgress >= 1) {
                 state.aiState = 'shooting';
-                state.aiTimer = 8; // tiny pause before firing
+                state.aiTimer = 8;
             }
         } else if (state.aiState === 'shooting') {
             state.aiTimer--;
@@ -863,18 +1074,25 @@
         const dist = Math.hypot(dx, dy);
         if (dist === 0) return;
         const p = state.power;
+        if (p < 0.5) return;
         cue.vx = (dx / dist) * p;
         cue.vy = (dy / dist) * p;
         state.power = 0;
         state.moving = true;
-        state.potsThisShot = 0;
-        state.cueFouled = false;
-         state.hitBall = false; 
+
+        // Reset shot tracking
+        state.pottedThisShot = [];
+        state.cuePotted = false;
+        state.firstHitBall = null;
+        state.railHitAfterContact = false;
+        state.anyBallHit = false;
+        ballsTouchedRail = new Set();
+
         soundShot(p);
     }
 
     function handleInput() {
-        if (state.charging && state.phase === 'play' && !state.moving && !state.won && !state.gameOver) {
+        if (state.charging && state.phase === 'play' && !state.moving && !state.gameOver && !state.placingCue) {
             state.power += CHARGE_RATE;
             if (state.power >= MAX_POWER) state.power = state.power % MAX_POWER;
         }
@@ -898,7 +1116,7 @@
     }
 
     // -----------------------------------------------------------------------
-    // Rendering helpers
+    // Rendering
     // -----------------------------------------------------------------------
     function shade(hex, pct) {
         const n = parseInt(hex.slice(1), 16);
@@ -925,12 +1143,19 @@
         ctx.fillStyle = grad;
         ctx.fillRect(F.x, F.y, F.w, F.h);
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        // Head string line
+        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(F.x + F.w * 0.25, F.y);
         ctx.lineTo(F.x + F.w * 0.25, FY2);
         ctx.stroke();
+
+        // Foot spot
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.beginPath();
+        ctx.arc(F.x + F.w * 0.72, F.y + F.h * 0.5, 3, 0, Math.PI * 2);
+        ctx.fill();
 
         for (const p of POCKETS) {
             const g = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, POCKET_R);
@@ -942,28 +1167,113 @@
     }
 
     function drawBallAt(x, y, color, number, isCue) {
-        ctx.fillStyle = 'rgba(0,0,0,0.4)';
-        ctx.beginPath(); ctx.arc(x + 2, y + 3, BALL_R, 0, Math.PI * 2); ctx.fill();
+        const R = BALL_R;
 
-        const g = ctx.createRadialGradient(x - 4, y - 5, 1, x, y, BALL_R);
-        g.addColorStop(0, '#ffffff');
-        g.addColorStop(0.25, color);
-        g.addColorStop(1, shade(color, -0.4));
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(x, y, BALL_R, 0, Math.PI * 2); ctx.fill();
+        // Shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath(); ctx.arc(x + 2, y + 2, R, 0, Math.PI * 2); ctx.fill();
 
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.beginPath();
-        ctx.ellipse(x - 4, y - 5, BALL_R * 0.35, BALL_R * 0.22, -Math.PI / 4, 0, Math.PI * 2);
-        ctx.fill();
+        if (isCue) {
+            // Cue ball — white with gradient
+            const g = ctx.createRadialGradient(x - 3, y - 4, 1, x, y, R);
+            g.addColorStop(0, '#ffffff');
+            g.addColorStop(0.6, '#f0f0f0');
+            g.addColorStop(1, '#c0c0c0');
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+            // Highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.beginPath();
+            ctx.ellipse(x - 3, y - 4, R * 0.3, R * 0.2, -Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
+            return;
+        }
 
-        if (!isCue) {
+        if (isEightBall(number)) {
+            // 8-ball — solid black
+            const g = ctx.createRadialGradient(x - 3, y - 4, 1, x, y, R);
+            g.addColorStop(0, '#555555');
+            g.addColorStop(0.3, '#222222');
+            g.addColorStop(1, '#000000');
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+
+            // White circle for number
             ctx.fillStyle = '#fff';
-            ctx.beginPath(); ctx.arc(x, y + 1, 6.5, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x, y + 0.5, 5.5, 0, Math.PI * 2); ctx.fill();
             ctx.fillStyle = '#000';
-            ctx.font = 'bold 11px system-ui, sans-serif';
+            ctx.font = 'bold 8px system-ui, sans-serif';
             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(String(number), x, y + 1.5);
+            ctx.fillText('8', x, y + 1);
+
+            // Highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.25)';
+            ctx.beginPath();
+            ctx.ellipse(x - 3, y - 4, R * 0.3, R * 0.18, -Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
+            return;
+        }
+
+        if (isSolid(number)) {
+            // Solid ball — full color
+            const g = ctx.createRadialGradient(x - 3, y - 4, 1, x, y, R);
+            g.addColorStop(0, '#ffffff');
+            g.addColorStop(0.25, color);
+            g.addColorStop(1, shade(color, -0.35));
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+
+            // White number circle
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(x, y + 0.5, 5.5, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 8px system-ui, sans-serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(String(number), x, y + 1);
+
+            // Highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            ctx.beginPath();
+            ctx.ellipse(x - 3, y - 4, R * 0.32, R * 0.2, -Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // Stripe ball — white base with colored stripe band
+            // White base
+            const g = ctx.createRadialGradient(x - 3, y - 4, 1, x, y, R);
+            g.addColorStop(0, '#ffffff');
+            g.addColorStop(0.7, '#f5f5f5');
+            g.addColorStop(1, '#d0d0d0');
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+
+            // Color stripe band (horizontal across center)
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(x, y, R - 0.5, 0, Math.PI * 2);
+            ctx.clip();
+
+            const bandH = R * 1.1;
+            const bandG = ctx.createLinearGradient(x - R, y - bandH/2, x - R, y + bandH/2);
+            bandG.addColorStop(0, shade(color, 0.15));
+            bandG.addColorStop(0.5, color);
+            bandG.addColorStop(1, shade(color, -0.2));
+            ctx.fillStyle = bandG;
+            ctx.fillRect(x - R, y - bandH / 2, R * 2, bandH);
+            ctx.restore();
+
+            // White number circle
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(x, y + 0.5, 5.5, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 8px system-ui, sans-serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(String(number), x, y + 1);
+
+            // Highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.beginPath();
+            ctx.ellipse(x - 3, y - 4, R * 0.3, R * 0.18, -Math.PI / 4, 0, Math.PI * 2);
+            ctx.fill();
         }
     }
 
@@ -972,7 +1282,9 @@
     }
 
     function drawAim() {
-        if (state.moving || state.phase !== 'play' || state.won || state.gameOver) return;
+        if (state.moving || state.phase !== 'play' || state.gameOver) return;
+        if (state.placingCue) return;
+        if (state.turn === 'ai') return;
         const cue = state.balls.find(b => b.isCue && !b.potted);
         if (!cue) return;
         const dx = state.aim.x - cue.x, dy = state.aim.y - cue.y;
@@ -980,19 +1292,21 @@
         if (dist === 0) return;
         const nx = dx / dist, ny = dy / dist;
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        // Aim line
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
         ctx.setLineDash([6, 5]); ctx.lineWidth = 1.2;
         ctx.beginPath();
         ctx.moveTo(cue.x + nx * BALL_R, cue.y + ny * BALL_R);
         ctx.lineTo(state.aim.x + nx * 40, state.aim.y + ny * 40);
         ctx.stroke(); ctx.setLineDash([]);
 
-        const pull = 14 + state.power * 3.0;
+        // Cue stick
+        const pull = 12 + state.power * 2.5;
         const s1 = { x: cue.x - nx * (BALL_R + pull),       y: cue.y - ny * (BALL_R + pull) };
-        const s2 = { x: cue.x - nx * (BALL_R + pull + 120), y: cue.y - ny * (BALL_R + pull + 120) };
+        const s2 = { x: cue.x - nx * (BALL_R + pull + 110), y: cue.y - ny * (BALL_R + pull + 110) };
 
-        ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-        ctx.beginPath(); ctx.moveTo(s1.x+2, s1.y+3); ctx.lineTo(s2.x+2, s2.y+3); ctx.stroke();
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(s1.x+2, s1.y+2); ctx.lineTo(s2.x+2, s2.y+2); ctx.stroke();
 
         const stickGrad = ctx.createLinearGradient(s1.x, s1.y, s2.x, s2.y);
         stickGrad.addColorStop(0, '#f3d597');
@@ -1001,23 +1315,26 @@
         ctx.strokeStyle = stickGrad; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
 
+        // Tip
         ctx.strokeStyle = '#2a6bb0'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s1.x - nx*4, s1.y - ny*4); ctx.stroke();
         ctx.lineCap = 'butt';
 
+        // Crosshair
         ctx.save();
         ctx.strokeStyle = '#f1c40f'; ctx.fillStyle = 'rgba(241,196,15,0.15)'; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(state.aim.x, state.aim.y, 7, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(state.aim.x, state.aim.y, 6, 0, Math.PI*2); ctx.fill(); ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(state.aim.x-10, state.aim.y); ctx.lineTo(state.aim.x-4, state.aim.y);
-        ctx.moveTo(state.aim.x+4, state.aim.y);  ctx.lineTo(state.aim.x+10, state.aim.y);
-        ctx.moveTo(state.aim.x, state.aim.y-10); ctx.lineTo(state.aim.x, state.aim.y-4);
-        ctx.moveTo(state.aim.x, state.aim.y+4);  ctx.lineTo(state.aim.x, state.aim.y+10);
+        ctx.moveTo(state.aim.x-9, state.aim.y); ctx.lineTo(state.aim.x-3, state.aim.y);
+        ctx.moveTo(state.aim.x+3, state.aim.y);  ctx.lineTo(state.aim.x+9, state.aim.y);
+        ctx.moveTo(state.aim.x, state.aim.y-9); ctx.lineTo(state.aim.x, state.aim.y-3);
+        ctx.moveTo(state.aim.x, state.aim.y+3);  ctx.lineTo(state.aim.x, state.aim.y+9);
         ctx.stroke(); ctx.restore();
     }
 
     function drawTargetBallTrajectory() {
-        if (state.moving || state.phase !== 'play' || state.won || state.gameOver) return;
+        if (state.moving || state.phase !== 'play' || state.gameOver) return;
+        if (state.placingCue || state.turn === 'ai') return;
         const cue = state.balls.find(b => b.isCue && !b.potted);
         if (!cue) return;
         const aimX = state.aim.x - cue.x, aimY = state.aim.y - cue.y;
@@ -1051,34 +1368,74 @@
         if (nLen === 0) return;
         const finalDirX = nX / nLen, finalDirY = nY / nLen;
 
+        // Ghost ball outline
         ctx.save();
-        ctx.globalAlpha = 0.35; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.3; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(ghostX, ghostY, BALL_R, 0, Math.PI*2); ctx.stroke();
         ctx.restore();
 
+        // Target ball trajectory
         ctx.save();
-        ctx.setLineDash([8, 6]); ctx.lineWidth = 1.8; ctx.strokeStyle = 'rgba(255,220,100,0.85)';
+        ctx.setLineDash([7, 5]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,220,100,0.7)';
         ctx.beginPath();
         let x = targetBall.x + finalDirX * (BALL_R + 2);
         let y = targetBall.y + finalDirY * (BALL_R + 2);
         ctx.moveTo(x, y);
-        let vx = finalDirX * 7, vy = finalDirY * 7;
-        for (let i = 0; i < 45; i++) {
-            let newX = x + vx, newY = y + vy, bounced = false;
-            if (newX - BALL_R < F.x)  { newX = F.x  + BALL_R; vx = -vx*0.94; bounced = true; }
-            if (newX + BALL_R > FX2)  { newX = FX2  - BALL_R; vx = -vx*0.94; bounced = true; }
-            if (newY - BALL_R < F.y)  { newY = F.y  + BALL_R; vy = -vy*0.94; bounced = true; }
-            if (newY + BALL_R > FY2)  { newY = FY2  - BALL_R; vy = -vy*0.94; bounced = true; }
+        let vx = finalDirX * 6, vy = finalDirY * 6;
+        for (let i = 0; i < 40; i++) {
+            let newX = x + vx, newY = y + vy;
+            if (newX - BALL_R < F.x)  { newX = F.x  + BALL_R; vx = -vx*0.9; }
+            if (newX + BALL_R > FX2)  { newX = FX2  - BALL_R; vx = -vx*0.9; }
+            if (newY - BALL_R < F.y)  { newY = F.y  + BALL_R; vy = -vy*0.9; }
+            if (newY + BALL_R > FY2)  { newY = FY2  - BALL_R; vy = -vy*0.9; }
             ctx.lineTo(newX, newY); x = newX; y = newY;
-            if (Math.abs(vx) < 0.4 && Math.abs(vy) < 0.4) break;
-            if (!bounced) { vx *= 0.995; vy *= 0.995; }
+            if (Math.abs(vx) < 0.3 && Math.abs(vy) < 0.3) break;
+            vx *= 0.995; vy *= 0.995;
         }
         ctx.stroke(); ctx.setLineDash([]); ctx.restore();
     }
 
+    function drawAIAimLine() {
+        if (state.aiState !== 'aiming' && state.aiState !== 'shooting') return;
+        const cue = state.balls.find(b => b.isCue && !b.potted);
+        if (!cue) return;
+        const dx = state.aim.x - cue.x, dy = state.aim.y - cue.y;
+        const len = Math.hypot(dx, dy);
+        if (len === 0) return;
+        const nx = dx / len, ny = dy / len;
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        ctx.strokeStyle = '#e74c3c';
+        ctx.setLineDash([5, 6]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cue.x + nx * BALL_R, cue.y + ny * BALL_R);
+        ctx.lineTo(state.aim.x + nx * 50, state.aim.y + ny * 50);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+    }
+
+    function drawPlacingCue() {
+        if (!state.placingCue) return;
+        // Draw semi-transparent cue ball at mouse position
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        drawBallAt(state.aim.x, state.aim.y, '#ffffff', 0, true);
+        ctx.restore();
+
+        // Draw placement zone indicator
+        ctx.save();
+        ctx.strokeStyle = 'rgba(46, 204, 113, 0.4)';
+        ctx.setLineDash([8, 6]);
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(F.x + 2, F.y + 2, F.w - 4, F.h - 4);
+        ctx.setLineDash([]);
+        ctx.restore();
+    }
+
     function drawCineBalls() {
         for (const cb of state.cineBalls) {
-            if (cb.gone) continue;
             if (!cb.active && !cb.arrived) continue;
             drawBallAt(cb.x, cb.y, cb.color, cb.number, cb.isCue);
         }
@@ -1086,8 +1443,7 @@
 
     function drawCineOverlay() {
         if (state.phase !== 'intro') return;
-
-        const stripH = 60;
+        const stripH = 55;
         const grd = ctx.createLinearGradient(0, F.y, 0, F.y + stripH);
         grd.addColorStop(0, 'rgba(0,0,0,0.6)');
         grd.addColorStop(1, 'rgba(0,0,0,0)');
@@ -1099,33 +1455,11 @@
         ctx.shadowColor = 'rgba(0,0,0,0.8)';
         ctx.shadowBlur = 6;
         ctx.fillStyle = '#f1c40f';
-        ctx.font = 'bold 24px system-ui, sans-serif';
-        ctx.fillText(`ФРЕЙМ  ${state.frame}`, W / 2, F.y + 21);
-        ctx.fillStyle = 'rgba(255,255,255,0.75)';
-        ctx.font = '13px system-ui, sans-serif';
-        ctx.fillText('Шары занимают позиции…', W / 2, F.y + 42);
-        ctx.restore();
-    }
-
-    function drawAIAimLine() {
-        if (state.aiState !== 'aiming' && state.aiState !== 'shooting') return;
-        const cue = state.balls.find(b => b.isCue && !b.potted);
-        if (!cue) return;
-        // Draw a subtle red aim line to show AI is thinking/aiming
-        const dx = state.aim.x - cue.x, dy = state.aim.y - cue.y;
-        const len = Math.hypot(dx, dy);
-        if (len === 0) return;
-        const nx = dx / len, ny = dy / len;
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        ctx.strokeStyle = '#e74c3c';
-        ctx.setLineDash([5, 6]);
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(cue.x + nx * BALL_R, cue.y + ny * BALL_R);
-        ctx.lineTo(state.aim.x + nx * 60, state.aim.y + ny * 60);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.font = 'bold 22px system-ui, sans-serif';
+        ctx.fillText('🎱 ВОСЬМЁРКА', W / 2, F.y + 20);
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.fillText('Шары занимают позиции…', W / 2, F.y + 40);
         ctx.restore();
     }
 
@@ -1136,37 +1470,78 @@
         if (state.phase === 'play') {
             for (const b of state.balls) if (!b.potted) drawBall(b);
             drawAim();
-            if (state.turn === 'player') drawTargetBallTrajectory();
-            else drawAIAimLine();
+            drawTargetBallTrajectory();
+            drawAIAimLine();
+            drawPlacingCue();
         } else {
             drawCineBalls();
             drawCineOverlay();
         }
     }
 
+    // -----------------------------------------------------------------------
+    // HUD
+    // -----------------------------------------------------------------------
     function updateHUD() {
-        const scoreEl    = document.getElementById('score');
-        const livesEl    = document.getElementById('lives');
-        const frameEl    = document.getElementById('frame');
         const powerFillEl = document.getElementById('powerFill');
-        const aiScoreEl  = document.getElementById('aiScore');
-        const aiLivesEl  = document.getElementById('aiLives');
-        const turnEl     = document.getElementById('turnIndicator');
-
-        if (scoreEl)    scoreEl.textContent    = String(state.playerScore).padStart(5, '0');
-        if (livesEl)    livesEl.textContent    = Math.max(0, state.playerLives);
-        if (frameEl)    frameEl.textContent    = String(state.frame).padStart(2, '0');
         if (powerFillEl) powerFillEl.style.width = (state.power / MAX_POWER * 100) + '%';
-        if (aiScoreEl)  aiScoreEl.textContent  = String(state.aiScore).padStart(5, '0');
-        if (aiLivesEl)  aiLivesEl.textContent  = Math.max(0, state.aiLives);
-        const playerWinsEl = document.getElementById('playerWins');
-        const aiWinsEl     = document.getElementById('aiWins');
-        if (playerWinsEl) playerWinsEl.textContent = String(state.playerWins).padStart(2, '0');
-        if (aiWinsEl)     aiWinsEl.textContent     = String(state.aiWins).padStart(2, '0');
-        const playerBlock = document.querySelector('.player-block');
-const aiBlock = document.querySelector('.ai-block');
-if (playerBlock) playerBlock.classList.toggle('active-turn', state.turn === 'player');
-if (aiBlock) aiBlock.classList.toggle('active-turn', state.turn === 'ai');
+
+        const turnEl = document.getElementById('turnIndicator');
+        if (turnEl) {
+            if (state.turn === 'player') {
+                turnEl.textContent = 'ВАШ ХОД';
+                turnEl.className = 'turn-player';
+            } else {
+                turnEl.textContent = 'ХОД Снеговика';
+                turnEl.className = 'turn-ai';
+            }
+        }
+
+        const bihEl = document.getElementById('ballInHandIndicator');
+        if (bihEl) bihEl.style.display = state.placingCue ? '' : 'none';
+
+        // Player group
+        const pgEl = document.getElementById('playerGroup');
+        if (pgEl) {
+            if (state.playerGroup === 'solids') pgEl.textContent = '● Сплошные (1-7)';
+            else if (state.playerGroup === 'stripes') pgEl.textContent = '◐ Полосатые (9-15)';
+            else pgEl.textContent = '—';
+        }
+
+        const agEl = document.getElementById('aiGroup');
+        if (agEl) {
+            if (state.aiGroup === 'solids') agEl.textContent = '● Сплошные (1-7)';
+            else if (state.aiGroup === 'stripes') agEl.textContent = '◐ Полосатые (9-15)';
+            else agEl.textContent = '—';
+        }
+
+        // Potted balls display
+        updatePottedDisplay('playerPotted', state.playerPotted);
+        updatePottedDisplay('aiPotted', state.aiPotted);
+
+        // Active turn highlight
+        const playerBlock = document.getElementById('playerBlock');
+        const aiBlock = document.getElementById('aiBlock');
+        if (playerBlock) playerBlock.classList.toggle('active-turn', state.turn === 'player');
+        if (aiBlock) aiBlock.classList.toggle('active-turn', state.turn === 'ai');
+    }
+
+    function updatePottedDisplay(elId, potted) {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        el.innerHTML = '';
+        const sorted = [...potted].sort((a, b) => a - b);
+        for (const num of sorted) {
+            const div = document.createElement('div');
+            div.className = 'mini-ball' + (isStripe(num) ? ' stripe' : '');
+            div.style.backgroundColor = BALL_COLORS[num];
+            if (isStripe(num)) {
+                div.style.setProperty('--ball-color', BALL_COLORS[num]);
+                div.style.backgroundColor = 'transparent';
+            }
+            div.textContent = num;
+            el.appendChild(div);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1181,18 +1556,48 @@ if (aiBlock) aiBlock.classList.toggle('active-turn', state.turn === 'ai');
     }
     function clampToFelt(p) {
         return {
-            x: Math.max(F.x, Math.min(FX2, p.x)),
-            y: Math.max(F.y, Math.min(FY2, p.y)),
+            x: Math.max(F.x + BALL_R, Math.min(FX2 - BALL_R, p.x)),
+            y: Math.max(F.y + BALL_R, Math.min(FY2 - BALL_R, p.y)),
         };
     }
 
-    canvas.addEventListener('mousemove', (e) => { if (state.turn !== 'ai') state.aim = clampToFelt(canvasCoords(e)); });
+    canvas.addEventListener('mousemove', (e) => {
+        if (state.turn === 'ai' && !state.placingCue) return;
+        state.aim = clampToFelt(canvasCoords(e));
+    });
 
     canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         initAudio(); resumeAudio();
-        if (state.turn === 'ai') return;   // block input during AI turn
-        if (state.moving || state.phase !== 'play' || state.won || state.gameOver) return;
+
+        if (state.placingCue && state.turn === 'player') {
+            // Place cue ball
+            const pos = clampToFelt(canvasCoords(e));
+            const cue = state.balls.find(b => b.isCue);
+            if (!cue) return;
+
+            // Check not overlapping any ball
+            let valid = true;
+            for (const b of state.balls) {
+                if (b.isCue || b.potted) continue;
+                if (Math.hypot(pos.x - b.x, pos.y - b.y) < BALL_R * 2.2) { valid = false; break; }
+            }
+            if (!valid) {
+                setMessage('Нельзя ставить биток вплотную к шару! Выберите другое место.');
+                return;
+            }
+
+            cue.potted = false;
+            cue.x = pos.x; cue.y = pos.y;
+            cue.vx = 0; cue.vy = 0;
+            state.placingCue = false;
+            state.ballInHand = false;
+            setMessage('Биток установлен. Ваш ход.');
+            return;
+        }
+
+        if (state.turn === 'ai') return;
+        if (state.moving || state.phase !== 'play' || state.gameOver) return;
         state.aim = clampToFelt(canvasCoords(e));
         state.charging = true;
         soundCharge();
@@ -1205,11 +1610,13 @@ if (aiBlock) aiBlock.classList.toggle('active-turn', state.turn === 'ai');
     window.addEventListener('mouseup', onRelease);
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+    // Buttons
     const resetBtn = document.getElementById('resetBtn');
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
             initAudio(); resumeAudio();
-            resetFrame(true);
+            closeAllModals();
+            resetGame(true);
             updateHUD();
         });
     }
@@ -1224,270 +1631,37 @@ if (aiBlock) aiBlock.classList.toggle('active-turn', state.turn === 'ai');
     }
 
     // -----------------------------------------------------------------------
-    // SUPABASE (новая таблица pool_scores)
+    // Modals
     // -----------------------------------------------------------------------
-    const SUPABASE_URL = 'https://hewlajcgcyaoitdethhq.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhld2xhamNnY3lhb2l0ZGV0aGhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MDIyNTcsImV4cCI6MjA5MTQ3ODI1N30.-OYgXzzjUXJA2Bc95CZVpKCErZED6HMNdEFwZpslbD4';
-const TABLE_POOL = 'pool_scores';
-
-    async function sbFetchPool(path, opts = {}) {
-        const headers = {
-            'apikey': SUPABASE_KEY,
-            'Authorization': 'Bearer ' + SUPABASE_KEY,
-            'Content-Type': 'application/json',
-            ...(opts.headers || {})
-        };
-        const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, { ...opts, headers });
-        if (!res.ok) {
-            const txt = await res.text();
-            console.error('Supabase error:', res.status, txt);
-            throw new Error(txt);
-        }
-        const txt = await res.text();
-        return txt ? JSON.parse(txt) : null;
+    function closeAllModals() {
+        document.getElementById('gameOverModal')?.classList.remove('active');
+        document.getElementById('winModal')?.classList.remove('active');
     }
 
-    async function loadPoolHighScores() {
-    try {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE_POOL}?select=name,score&order=score.desc&limit=20`, {
-            headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': 'Bearer ' + SUPABASE_KEY
-            }
-        });
-        
-        if (!res.ok) {
-            console.error('Load error:', res.status);
-            return null;
-        }
-        
-        return await res.json();
-    } catch(e) {
-        console.error('Supabase load error', e);
-        return null;
-    }
-}
-
-    async function savePoolHighScore(name, scoreVal) {
-    try {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE_POOL}`, {
-            method: 'POST',
-            headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': 'Bearer ' + SUPABASE_KEY,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ name, score: scoreVal })
-        });
-        
-        if (!res.ok) {
-            const txt = await res.text();
-            console.error('Save error:', res.status, txt);
-            return false;
-        }
-        return true;
-    } catch(e) {
-        console.error('Supabase save error', e);
-        return false;
-    }
-}
-
-    function getPoolPlayerName() {
-        return localStorage.getItem('poolPlayerName') || '';
-    }
-    function setPoolPlayerName(n) {
-        localStorage.setItem('poolPlayerName', n.trim());
-        updatePlayerLabel();
-    }
-
-        // -----------------------------------------------------------------------
-    // МОДАЛЬНЫЕ ОКНА
-    // -----------------------------------------------------------------------
-    function openGameOverModalPool() {
-        const goScoreEl = document.getElementById('goScore');
-        const playerNameInput = document.getElementById('playerNameInput');
-        if (goScoreEl) goScoreEl.textContent = state.score;
-        if (playerNameInput) playerNameInput.value = getPoolPlayerName();
-        const modal = document.getElementById('gameOverModal');
-        if (modal) modal.classList.add('active');
-    }
-    
-    function closeGameOverModalPool() {
-        const modal = document.getElementById('gameOverModal');
-        if (modal) modal.classList.remove('active');
-    }
-
-    function openWinModal() {
-        const winScoreEl = document.getElementById('winScore');
-        if (winScoreEl) winScoreEl.textContent = state.score;
-        const modal = document.getElementById('winModal');
-        if (modal) modal.classList.add('active');
-    }
-    
-    function closeWinModal() {
-        const modal = document.getElementById('winModal');
-        if (modal) modal.classList.remove('active');
-    }
-
-    async function openHsModalPool() {
-        const modal = document.getElementById('hsModal');
-        const list = document.getElementById('hsList');
-        if (!modal || !list) return;
-        
-        modal.classList.add('active');
-        list.innerHTML = '<div class="hs-loading">Загрузка...</div>';
-        const rows = await loadPoolHighScores();
-        if (!rows || rows.length === 0) {
-            list.innerHTML = '<div class="hs-loading">Рекордов пока нет</div>';
-            return;
-        }
-        const medals = ['🥇','🥈','🥉'];
-        list.innerHTML = rows.map((r, i) => `
-            <div class="hs-item">
-                <span class="hs-rank">${medals[i] || (i+1)}</span>
-                <span class="hs-name">${escapeHtml(r.name)}</span>
-                <span class="hs-score">${r.score.toLocaleString()}</span>
-            </div>`).join('');
-    }
-    
-    function closeHsModalPool() {
-        const modal = document.getElementById('hsModal');
-        if (modal) modal.classList.remove('active');
-    }
-
-    function escapeHtml(s) {
-        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
-    // -----------------------------------------------------------------------
-    // ПОДКЛЮЧЕНИЕ СОБЫТИЙ МОДАЛЬНЫХ ОКОН (с проверкой наличия элементов)
-    // -----------------------------------------------------------------------
-    function updatePlayerLabel() {
-        const lbl = document.getElementById('playerLabel');
-        if (!lbl) return;
-        const name = localStorage.getItem('poolPlayerName');
-        lbl.textContent = name && name.trim() ? name.trim() : 'ВЫ';
-    }
-
-    function initModals() {
-        console.log('initModals called');
-        
-        const saveNameBtn = document.getElementById('saveNameBtn');
-        if (saveNameBtn) {
-            saveNameBtn.addEventListener('click', () => {
-                const input = document.getElementById('playerNameInput');
-                const v = input ? input.value.trim() : '';
-                if (v) setPoolPlayerName(v);
-            });
-        } else {
-            console.warn('saveNameBtn not found');
-        }
-
-        const btnSaveScore = document.getElementById('btnSaveScore');
-        if (btnSaveScore) {
-            btnSaveScore.addEventListener('click', async () => {
-                const input = document.getElementById('playerNameInput');
-                const name = input ? input.value.trim() : 'Аноним';
-                setPoolPlayerName(name);
-                const btn = document.getElementById('btnSaveScore');
-                if (btn) btn.textContent = '⏳ Сохраняю...';
-                const ok = await savePoolHighScore(name, state.score);
-                if (ok) {
-                    if (btn) btn.textContent = '✅ Сохранено!';
-                    setTimeout(() => {
-                        closeGameOverModalPool();
-                        resetFrame(true);
-                        updateHUD();
-                    }, 1000);
-                } else {
-                    if (btn) btn.textContent = '❌ Ошибка';
-                }
-            });
-        } else {
-            console.warn('btnSaveScore not found');
-        }
-
-        const btnRestart = document.getElementById('btnRestartAfterLose');
-        if (btnRestart) {
-            btnRestart.addEventListener('click', () => {
-                closeGameOverModalPool();
-                resetFrame(true);
-                updateHUD();
-            });
-        } else {
-            console.warn('btnRestartAfterLose not found');
-        }
-
-        const btnNextFrame = document.getElementById('btnNextFrame');
-        if (btnNextFrame) {
-            btnNextFrame.addEventListener('click', () => {
-                closeWinModal();
-                state.frame++;
-                resetFrame(false);
-                updateHUD();
-            });
-        } else {
-            console.warn('btnNextFrame not found');
-        }
-
-        const btnResetGame = document.getElementById('btnResetGame');
-        if (btnResetGame) {
-            btnResetGame.addEventListener('click', () => {
-                closeWinModal();
-                resetFrame(true);
-                updateHUD();
-            });
-        } else {
-            console.warn('btnResetGame not found');
-        }
-
-        const hsModalClose = document.getElementById('hsModalClose');
-        if (hsModalClose) hsModalClose.addEventListener('click', closeHsModalPool);
-        
-        const hsCloseBtn = document.getElementById('hsCloseBtn');
-        if (hsCloseBtn) hsCloseBtn.addEventListener('click', closeHsModalPool);
-        
-        const hsModal = document.getElementById('hsModal');
-        if (hsModal) {
-            hsModal.addEventListener('click', (e) => {
-                if (e.target === hsModal) closeHsModalPool();
-            });
-        }
-        
-        const gameOverModal = document.getElementById('gameOverModal');
-        if (gameOverModal) {
-            gameOverModal.addEventListener('click', (e) => {
-                if (e.target === gameOverModal) closeGameOverModalPool();
-            });
-        }
-        
-        const winModal = document.getElementById('winModal');
-        if (winModal) {
-            winModal.addEventListener('click', (e) => {
-                if (e.target === winModal) closeWinModal();
-            });
-        }
-    }
-
-    function initPoolHotkeys() {
-        document.addEventListener('keydown', (e) => {
-            const k = e.key;
-            const anyModal = () =>
-                document.getElementById('hsModal')?.classList.contains('active') ||
-                document.getElementById('gameOverModal')?.classList.contains('active') ||
-                document.getElementById('winModal')?.classList.contains('active');
-            
-            if (k === 't' || k === 'T' || k === 'е' || k === 'Е') {
-                if (!anyModal()) openHsModalPool();
-                return;
-            }
-            if (k === 'Escape') {
-                if (document.getElementById('hsModal')?.classList.contains('active')) closeHsModalPool();
-                if (document.getElementById('gameOverModal')?.classList.contains('active')) closeGameOverModalPool();
-                if (document.getElementById('winModal')?.classList.contains('active')) closeWinModal();
-            }
+    const btnRestart = document.getElementById('btnRestartAfterLose');
+    if (btnRestart) {
+        btnRestart.addEventListener('click', () => {
+            closeAllModals();
+            resetGame(true);
+            updateHUD();
         });
     }
+
+    const btnNewGameWin = document.getElementById('btnNewGameAfterWin');
+    if (btnNewGameWin) {
+        btnNewGameWin.addEventListener('click', () => {
+            closeAllModals();
+            resetGame(true);
+            updateHUD();
+        });
+    }
+
+    document.getElementById('gameOverModal')?.addEventListener('click', (e) => {
+        if (e.target.id === 'gameOverModal') closeAllModals();
+    });
+    document.getElementById('winModal')?.addEventListener('click', (e) => {
+        if (e.target.id === 'winModal') closeAllModals();
+    });
 
     // -----------------------------------------------------------------------
     // Main loop
@@ -1502,22 +1676,7 @@ const TABLE_POOL = 'pool_scores';
         requestAnimationFrame(loop);
     }
 
-    // Ждём загрузки DOM перед инициализацией модалок
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            initModals();
-            initPoolHotkeys();
-            resetFrame(true);
-            updateHUD();
-            updatePlayerLabel();
-            loop();
-        });
-    } else {
-        initModals();
-        initPoolHotkeys();
-        resetFrame(true);
-        updateHUD();
-        updatePlayerLabel();
-        loop();
-    }
+    resetGame(true);
+    updateHUD();
+    loop();
 })();
