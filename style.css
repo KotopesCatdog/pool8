@@ -1,0 +1,255 @@
+:root {
+    --bg: #0b0f14;
+    --panel: #141b24;
+    --accent: #f1c40f;
+    --text: #e6edf3;
+    --muted: #8b97a7;
+    --felt: #0a6b3a;
+    --rail: #3a1f0b;
+    --rail-hi: #7a4220;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: radial-gradient(1200px 600px at 50% 20%, #1a2533 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+    min-height: 100vh;
+    user-select: none;
+}
+
+.wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 18px 12px 32px;
+}
+
+.hud {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+    background: var(--panel);
+    border: 1px solid #1f2a38;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+.hud-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.hud-item .label {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 700;
+}
+
+#score { color: var(--accent); }
+
+.hud-item.power {
+    flex: 1;
+    min-width: 160px;
+}
+
+.bar {
+    flex: 1;
+    height: 12px;
+    background: #0a1018;
+    border: 1px solid #2a384a;
+    border-radius: 6px;
+    overflow: hidden;
+    min-width: 120px;
+}
+
+#powerFill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2ecc71 0%, #f1c40f 60%, #e74c3c 100%);
+    transition: width 40ms linear;
+}
+
+.btn {
+    background: #1f2a38;
+    color: var(--text);
+    border: 1px solid #2a384a;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s;
+}
+.btn:hover { background: #27374b; }
+.btn:active { transform: translateY(1px); }
+
+canvas#table {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 860px;
+    margin: 0 auto;
+    background: #000;
+    border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    cursor: crosshair;
+}
+
+.controls {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.5;
+    background: var(--panel);
+    border: 1px solid #1f2a38;
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+
+.controls strong { color: var(--text); }
+
+#message {
+    margin: 8px 0 0;
+    color: var(--text);
+    min-height: 1.2em;
+}
+
+/* ── МОДАЛЬНЫЕ ОКНА ── */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 2000;
+    justify-content: center;
+    align-items: center;
+}
+.modal-overlay.active { display: flex; }
+
+.modal-box {
+    background: linear-gradient(135deg, #0a0f1e 0%, #16213e 100%);
+    border: 3px solid #f1c40f;
+    border-radius: 30px;
+    padding: 30px 40px;
+    text-align: center;
+    box-shadow: 0 0 60px rgba(241,196,15,0.4);
+    animation: modalPop 0.25s ease-out;
+    min-width: 340px;
+    max-width: 95vw;
+    position: relative;
+    font-family: system-ui, sans-serif;
+}
+
+@keyframes modalPop {
+    from { transform: scale(0.8); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+}
+
+.modal-box h2 {
+    font-size: 28px;
+    color: #f1c40f;
+    text-shadow: 0 0 10px #f1c40f;
+    margin: 0 0 18px;
+    letter-spacing: 3px;
+}
+
+.modal-icon { font-size: 56px; margin-bottom: 6px; }
+
+.modal-close {
+    position: absolute;
+    top: 12px; right: 18px;
+    background: none; border: none;
+    color: #ff8888; font-size: 24px;
+    cursor: pointer; padding: 0;
+    line-height: 1;
+}
+.modal-close:hover { color: #ff4444; }
+
+.hs-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin: 12px 0;
+    background: rgba(0,0,0,0.45);
+    border-radius: 14px;
+    padding: 8px 6px;
+    min-width: 280px;
+}
+.hs-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 7px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    font-size: 15px;
+}
+.hs-item:last-child { border-bottom: none; }
+.hs-rank  { color: #ffaa44; font-weight: bold; width: 36px; }
+.hs-name  { flex: 1; color: #fff; text-align: left; }
+.hs-score { color: #f1c40f; font-weight: bold; }
+.hs-loading { text-align: center; padding: 20px; color: #aaa; }
+
+.modal-btn {
+    background: linear-gradient(90deg, #f1c40f, #d4a00a);
+    border: none; color: #1a1a2e;
+    font-size: 16px; font-weight: bold;
+    padding: 10px 24px; border-radius: 40px;
+    cursor: pointer; transition: all 0.2s;
+    font-family: inherit;
+    margin: 5px 4px 0;
+}
+.modal-btn:hover { transform: scale(1.04); box-shadow: 0 0 16px rgba(241,196,15,0.7); }
+.modal-btn.danger { background: linear-gradient(90deg, #e94560, #c72a48); color: #fff; }
+.modal-btn.danger:hover { box-shadow: 0 0 16px rgba(233,69,96,0.7); }
+
+.player-row {
+    display: flex; align-items: center;
+    justify-content: center; gap: 10px;
+    margin: 14px 0;
+    background: rgba(0,0,0,0.35);
+    border-radius: 40px; padding: 8px 16px;
+}
+.player-row span { color: #f1c40f; font-size: 15px; }
+#playerNameInput {
+    background: #2a2a2a; border: 1px solid #f1c40f;
+    color: #fff; padding: 6px 12px; border-radius: 20px;
+    font-family: monospace; font-size: 14px;
+    width: 130px; text-align: center; outline: none;
+}
+.save-name-btn {
+    background: #f1c40f; border: none; color: #1a1a2e;
+    font-size: 16px; padding: 4px 10px;
+    border-radius: 20px; cursor: pointer; transition: 0.2s;
+}
+.save-name-btn:hover { background: #d4a00a; }
+.modal-score-line {
+    font-size: 18px; color: #ffdd88;
+    margin: 8px 0;
+    text-shadow: 0 0 6px #ffaa44;
+}
+.btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+
+
+.hud-player-block.active-turn {
+    box-shadow: 0 0 14px 3px rgba(255, 255, 255, 0.6);
+    border-color: rgba(255, 255, 255, 0.9);
+    transition: box-shadow 0.3s ease, border-color 0.3s ease;
+}
+.player-block.active-turn {
+    box-shadow: 0 0 14px 3px rgba(52, 152, 219, 0.9);
+    border-color: #3498db;
+}
+.ai-block.active-turn {
+    box-shadow: 0 0 14px 3px rgba(231, 76, 60, 0.9);
+    border-color: #e74c3c;
+}
