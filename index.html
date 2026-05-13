@@ -3,207 +3,86 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Pool</title>
-     <link rel="icon" href="https://foehelp.ru/favicon.png" type="image/png">
+    <title>Американский пул — Восьмёрка</title>
+    <link rel="icon" href="https://foehelp.ru/favicon.png" type="image/png">
     <link rel="stylesheet" href="style.css">
-    <style>
-        /* ── Two-player HUD layout ── */
-        .hud {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: nowrap;
-        }
-        .hud-player-block {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 3px;
-            padding: 4px 8px;
-            border-radius: 6px;
-            min-width: 110px;
-        }
-        .player-block {
-            background: rgba(52, 152, 219, 0.15);
-            border: 1px solid rgba(52, 152, 219, 0.35);
-        }
-        .ai-block {
-            background: rgba(231, 76, 60, 0.13);
-            border: 1px solid rgba(231, 76, 60, 0.3);
-        }
-        .hud-player-label {
-            font-size: 11px;
-            font-weight: bold;
-            letter-spacing: 1px;
-            opacity: 0.85;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .hud-center-block {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 3px;
-            flex: 1;
-        }
-        .hud-btns {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            margin-left: 4px;
-        }
-
-        /* ── Turn indicator ── */
-        #turnIndicator {
-            font-size: 12px;
-            font-weight: bold;
-            padding: 3px 10px;
-            border-radius: 10px;
-            letter-spacing: 0.5px;
-            transition: all 0.3s ease;
-            white-space: nowrap;
-        }
-        .turn-player {
-            background: rgba(52, 152, 219, 0.25);
-            color: #5dade2;
-            border: 1px solid rgba(52, 152, 219, 0.5);
-        }
-        .turn-ai {
-            background: rgba(231, 76, 60, 0.22);
-            color: #e74c3c;
-            border: 1px solid rgba(231, 76, 60, 0.5);
-            animation: ai-pulse 0.9s ease-in-out infinite alternate;
-        }
-        @keyframes ai-pulse {
-            from { opacity: 0.75; }
-            to   { opacity: 1; box-shadow: 0 0 8px rgba(231,76,60,0.5); }
-        }
-
-        /* ── Difficulty select ── */
-        .difficulty-select {
-            background: rgba(0,0,0,0.45);
-            color: #ccc;
-            border: 1px solid rgba(255,255,255,0.2);
-            border-radius: 4px;
-            font-size: 10px;
-            padding: 1px 3px;
-            cursor: pointer;
-            outline: none;
-        }
-        .difficulty-select:hover {
-            border-color: rgba(231,76,60,0.6);
-        }
-    </style>
 </head>
 <body>
     <div class="wrap">
         <header class="hud">
-            <!-- Счётчик побед игрока -->
-            <div class="wins-counter player-wins-counter">
-                <div class="wins-label">WINS</div>
-                <div class="wins-digits" id="playerWins">00</div>
-            </div>
-
-            <!-- Игрок -->
-            <div class="hud-player-block player-block">
+            <!-- Player 1 -->
+            <div class="hud-player-block player-block" id="playerBlock">
                 <div class="hud-player-label">🤪 <span id="playerLabel">ВЫ</span></div>
-                <div class="hud-item"><span class="label">SCORE</span><span id="score">00000</span></div>
-                <div class="hud-item"><span class="label">LIVES</span><span id="lives">5</span></div>
+                <div class="hud-group" id="playerGroup"></div>
+                <div class="hud-potted" id="playerPotted"></div>
             </div>
 
-            <!-- Центр: общая инфо -->
+            <!-- Center info -->
             <div class="hud-center-block">
-                <div class="hud-item"><span class="label">FRAME</span><span id="frame">01</span></div>
+                <div id="turnIndicator" class="turn-player">ВАШ ХОД</div>
                 <div class="hud-item power">
-                    <span class="label">POWER</span>
+                    <span class="label">СИЛА</span>
                     <div class="bar"><div id="powerFill"></div></div>
+                </div>
+                <div id="ballInHandIndicator" class="ball-in-hand-indicator" style="display:none;">
+                    🎯 СВОБОДНЫЙ ШАР — кликните на стол
                 </div>
             </div>
 
-            <!-- ИИ -->
-            <div class="hud-player-block ai-block">
-                <div class="hud-player-label">⛄ ИИ</div>
-                <div class="hud-item"><span class="label">SCORE</span><span id="aiScore">00000</span></div>
-                <div class="hud-item"><span class="label">LIVES</span><span id="aiLives">5</span></div>
-            </div>
-
-            <!-- Счётчик побед ИИ -->
-            <div class="wins-counter ai-wins-counter">
-                <div class="wins-label">WINS</div>
-                <div class="wins-digits" id="aiWins">00</div>
+            <!-- AI -->
+            <div class="hud-player-block ai-block" id="aiBlock">
+                <div class="hud-player-label">⛄ Снеговик</div>
+                <div class="hud-group" id="aiGroup"></div>
+                <div class="hud-potted" id="aiPotted"></div>
             </div>
 
             <div class="hud-btns">
                 <button id="muteBtn" class="btn" title="Звук">🔊</button>
-                <button id="resetBtn" class="btn">Новая партия</button>
+                <button id="resetBtn" class="btn">Новая игра</button>
             </div>
         </header>
 
         <canvas id="table" width="860" height="460"></canvas>
 
         <footer class="controls">
-          <p style="font-size: 1.4em; font-weight: bold;">
-    <span>📢</span> 
-    <span id="message">Старт игры...</span>
-</p>
-           
-            <p><strong>Управление:</strong>
-                двигайте мышь &mdash; прицел (куда полетит биток).<br>
-                Нажмите и удерживайте левую кнопку мыши для набора силы, отпустите для удара.<br>
-                <strong> Очки</strong> = номер шара × 10 × номер фрейма <br>
-                <strong>Жизни</strong> теряются при промахе или попадании битка в лузу. <br>
-                <strong>T</strong> - таблица рекордов.<br> Игра создана на основе "Video Pool" для ZX </p>
-          
+            <p style="font-size: 1.3em; font-weight: bold;">
+                <span>🎱</span>
+                <span id="message">Старт игры...</span>
+            </p>
+            <p><strong>Правила «Восьмёрка» (American 8-Ball Pool):</strong><br>
+                После разбития первый забитый шар определяет группу: <em>сплошные</em> (1–7) или <em>полосатые</em> (9–15).<br>
+                Забейте все шары своей группы, затем забейте шар <strong>8</strong> для победы.<br>
+                <strong>Фол:</strong> биток в лузу, первое касание чужого шара, ни один шар не коснулся борта.<br>
+                После фола — <em>свободный шар</em> (кликните на стол чтобы поставить биток).<br>
+                <strong>Проигрыш:</strong> забит шар 8 до своих шаров, или биток в лузу при ударе по 8-ке.
+            </p>
         </footer>
     </div>
-    
-        <!-- Модальное окно: GAME OVER -->
-<div class="modal-overlay" id="gameOverModal">
-    <div class="modal-box">
-        <div class="modal-icon">🎱</div>
-        <h2>GAME OVER</h2>
-        <div class="modal-score-line">Ваш счёт: <strong id="goScore">0</strong></div>
-        <div class="player-row">
-            <span>👤</span>
-            <input type="text" id="playerNameInput" maxlength="20" placeholder="Ваш ник">
-            <button class="save-name-btn" id="saveNameBtn" title="Запомнить ник">💾</button>
-        </div>
-        <div class="btn-row">
-            <button class="modal-btn" id="btnSaveScore">🏆 СОХРАНИТЬ</button>
-            <button class="modal-btn danger" id="btnRestartAfterLose">🔄 НАЧАТЬ СНОВА</button>
-        </div>
-    </div>
-</div>
 
-<!-- Модальное окно: ТАБЛИЦА РЕКОРДОВ -->
-<div class="modal-overlay" id="hsModal">
-    <div class="modal-box">
-        <button class="modal-close" id="hsModalClose">×</button>
-        <div class="modal-icon">🏆</div>
-        <h2>ТАБЛИЦА РЕКОРДОВ</h2>
-        <div class="hs-list" id="hsList"><div class="hs-loading">Загрузка...</div></div>
-        <button class="modal-btn" id="hsCloseBtn">ЗАКРЫТЬ</button>
-    </div>
-</div>
-
-<!-- Модальное окно: ПОБЕДА (фрейм собран) -->
-<div class="modal-overlay" id="winModal">
-    <div class="modal-box">
-        <div class="modal-icon">✨</div>
-        <h2>ФРЕЙМ СОБРАН!</h2>
-        <div class="modal-score-line">Счёт: <strong id="winScore">0</strong></div>
-        <div class="btn-row">
-            <button class="modal-btn" id="btnNextFrame">🎯 СЛЕДУЮЩИЙ ФРЕЙМ</button>
-            <button class="modal-btn danger" id="btnResetGame">🔄 НОВАЯ ПАРТИЯ</button>
+    <!-- GAME OVER modal -->
+    <div class="modal-overlay" id="gameOverModal">
+        <div class="modal-box">
+            <div class="modal-icon">🎱</div>
+            <h2 id="gameOverTitle">GAME OVER</h2>
+            <div class="modal-score-line" id="gameOverText"></div>
+            <div class="btn-row">
+                <button class="modal-btn" id="btnRestartAfterLose">🔄 НОВАЯ ИГРА</button>
+            </div>
         </div>
     </div>
-</div>
-    
+
+    <!-- WIN modal -->
+    <div class="modal-overlay" id="winModal">
+        <div class="modal-box">
+            <div class="modal-icon">🏆</div>
+            <h2>ПОБЕДА!</h2>
+            <div class="modal-score-line" id="winText"></div>
+            <div class="btn-row">
+                <button class="modal-btn" id="btnNewGameAfterWin">🎯 НОВАЯ ИГРА</button>
+            </div>
+        </div>
+    </div>
+
     <script src="game.js"></script>
-    
-     <link rel="stylesheet" href="/js/radio-widget.css">
-    <script src="/js/radio-widget.js"></script>
-
 </body>
 </html>
